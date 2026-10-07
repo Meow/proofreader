@@ -1,0 +1,72 @@
+# Example proofreader configuration. Copy it to the root of a GLua project as
+# .proofreader.yml and keep only what you change: every value shown here that matches the
+# built-in default can be left out. `proofreader --show-readers <Reader>` prints the effective
+# settings of a reader.
+
+# inherit_from: ../.proofreader.yml       # a string or a list, relative to this file
+
+AllReaders:
+  Include:
+    - '**/*.lua'
+  Exclude:
+    - 'docs/**/*'
+    - '**/*.min.lua'
+    - 'packages/pon/**/*'                # third-party code
+  # Severity: convention                  # default severity of readers without their own
+
+Layout/LineLength:
+  Max: 120
+  AllowURI: true
+  IgnoreComments: false
+
+Layout/IndentationWidth:
+  Width: 2
+
+Layout/IndentationConsistency:
+  AllowIndentedGroups: true              # net.Start(...) / indented writes / net.Send(...)
+  IndentationWidth: 2
+
+Layout/IndentationStyle:
+  IndentationWidth: 2
+
+Layout/EmptyLineBeforeBlock:
+  IncludeAnonymousFunctions: false       # true: also `btn.DoClick = function(b)` statements
+
+Layout/EmptyLineBetweenDefs:
+  NumberOfEmptyLines: 1
+  AllowAdjacentOneLineDefs: true
+
+Layout/SpaceAroundOperators:
+  ConcatStyle: no_space                  # 'a'..b..'c'; `space` for 'a' .. b
+  AllowForAlignment: true                # keep true when ForceEqualSignAlignment is on
+
+Layout/ExtraSpacing:
+  AllowForAlignment: true
+  ForceEqualSignAlignment: false
+
+Layout/SpaceInsideBraces:
+  EnforcedStyle: space                   # { a = 1 }; `no_space` for {a = 1}
+
+Style/StringLiterals:
+  EnforcedStyle: single_quotes           # or double_quotes
+
+Style/TrailingCommaInTable:
+  EnforcedStyle: no_comma                # or comma (required in multi-line tables)
+
+Style/DocumentationMethod:
+  RequireForLocalFunctions: false
+  Exclude:
+    - 'plugins/**/views/*.lua'           # reader-level file selection
+
+Lint/ShadowedLibrary:
+  Severity: error
+  Libraries: ['player', 'team', 'file', 'table', 'sound', 'string', 'math', 'util', 'net', 'hook',
+              'timer', 'render', 'surface', 'draw', 'ents', 'game', 'engine', 'input', 'gui',
+              'vgui', 'http', 'os', 'debug', 'bit']
+
+Naming/VariableName:
+  Enabled: true
+  AutoCorrect: false                     # has no fix anyway; shown for completeness
+
+Lint/Syntax:
+  Severity: fatal

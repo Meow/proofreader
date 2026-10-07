@@ -133,7 +133,10 @@ mod tests {
     fn allows_trailing_uris() {
         let url = format!("-- see https://example.com/{}", "x".repeat(120));
         expect_no_offenses(READER, &url);
-        expect_no_offenses(READER, &format!("local u = 'https://example.com/{}'", "x".repeat(120)));
+        expect_no_offenses(
+            READER,
+            &format!("local u = 'https://example.com/{}'", "x".repeat(120)),
+        );
         assert_eq!(inspect_with(READER, &url, "AllowURI: false").len(), 1);
         let followed = format!("{url} and more words");
         assert_eq!(inspect(READER, &followed).len(), 1);

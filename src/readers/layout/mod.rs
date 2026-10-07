@@ -1,3 +1,30 @@
 //! Layout readers: whitespace, indentation, blank lines and line length.
 
-automod::dir!(pub "src/readers/layout");
+pub mod alignment;
+pub mod block_structure;
+pub mod byte_order_mark;
+pub mod empty_line_after_block;
+pub mod empty_line_after_guard_clause;
+pub mod empty_line_before_block;
+pub mod empty_line_between_defs;
+pub mod empty_lines;
+pub mod empty_lines_around_block_body;
+pub mod end_of_line;
+pub mod extra_spacing;
+pub mod indentation_consistency;
+pub mod indentation_style;
+pub mod indentation_width;
+pub mod leading_comment_space;
+pub mod line_length;
+pub mod space_after_comma;
+pub mod space_after_not;
+pub mod space_around_operators;
+pub mod space_before_comma;
+pub mod space_before_comment;
+pub mod space_before_paren;
+pub mod space_inside_braces;
+pub mod space_inside_brackets;
+pub mod space_inside_parens;
+pub mod spacing;
+pub mod trailing_empty_lines;
+pub mod trailing_whitespace;

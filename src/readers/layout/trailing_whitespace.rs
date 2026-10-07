@@ -50,9 +50,27 @@ mod tests {
 
     #[test]
     fn flags_trailing_spaces_and_tabs() {
-        expect_offense(READER, "local a = 1  \n", 1, 12, "Trailing whitespace detected.");
-        expect_offense(READER, "local a = 1\t\n", 1, 12, "Trailing whitespace detected.");
-        expect_offense(READER, "x()\n   \ny()\n", 2, 1, "Trailing whitespace detected.");
+        expect_offense(
+            READER,
+            "local a = 1  \n",
+            1,
+            12,
+            "Trailing whitespace detected.",
+        );
+        expect_offense(
+            READER,
+            "local a = 1\t\n",
+            1,
+            12,
+            "Trailing whitespace detected.",
+        );
+        expect_offense(
+            READER,
+            "x()\n   \ny()\n",
+            2,
+            1,
+            "Trailing whitespace detected.",
+        );
         expect_offense(READER, "x() \r\n", 1, 4, "Trailing whitespace detected.");
         expect_offense(READER, "x() ", 1, 4, "Trailing whitespace detected.");
     }
@@ -77,13 +95,25 @@ mod tests {
         expect_no_offenses(READER, "local s = [[\nfoo   \nbar  \n]]\n");
         expect_no_offenses(READER, "local s = [[foo   \n]]\n");
         expect_no_offenses(READER, "local s = 'a\\\n  b'\n");
-        expect_offense(READER, "local s = [[\nx]]  \n", 2, 4, "Trailing whitespace detected.");
+        expect_offense(
+            READER,
+            "local s = [[\nx]]  \n",
+            2,
+            4,
+            "Trailing whitespace detected.",
+        );
     }
 
     #[test]
     fn flags_whitespace_in_comments() {
         expect_offense(READER, "-- note  \n", 1, 8, "Trailing whitespace detected.");
-        expect_offense(READER, "--[[\nlong  \n]]\n", 2, 5, "Trailing whitespace detected.");
+        expect_offense(
+            READER,
+            "--[[\nlong  \n]]\n",
+            2,
+            5,
+            "Trailing whitespace detected.",
+        );
     }
 
     #[test]

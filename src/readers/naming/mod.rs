@@ -1,3 +1,6 @@
 //! Naming readers: identifier conventions.
 
-automod::dir!(pub "src/readers/naming");
+pub mod case;
+pub mod declarations;
+pub mod method_name;
+pub mod variable_name;

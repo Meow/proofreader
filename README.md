@@ -101,20 +101,128 @@ Layout/LineLength:
 
 ## Readers
 
-| Reader | Severity | Autocorrect | Options |
-|--------|----------|-------------|---------|
-| `Layout/LineLength` | convention | no | `Max: 120`, `AllowURI: true`, `IgnoreComments: false` |
-| `Layout/TrailingWhitespace` | convention | yes | |
+`proofreader --show-readers` lists every reader with its description (38 in total);
+`proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
+configuration of the matching readers as YAML, which is a good starting point for a
+`.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
+`Exclude`. "Fix" says whether the reader autocorrects with `--fix`.
 
-`AllowURI` accepts a line whose overrun is a URI starting before the limit and running to the end of the line;
-`IgnoreComments` accepts a line whose overrun starts inside a comment. Trailing whitespace inside strings is
-never reported.
+### Layout
+
+| Reader | Checks | Severity | Fix | Options (defaults) |
+|--------|--------|----------|-----|--------------------|
+| `Layout/ByteOrderMark` | No UTF-8 byte order mark at the start of the file. | convention | yes | |
+| `Layout/EmptyLineAfterBlock` | A blank line after a line that closes a multi-line block with `end`, unless the next line is a closer (`end`, `else`, `elseif`, `until`, `}`, `)`), EOF, or returns to the level of an indented group. Lines ending in `,` (`end,`) are exempt. | convention | yes | |
+| `Layout/EmptyLineAfterGuardClause` | A blank line after a one-line `if ... then return/continue/break ... end`, unless followed by a closer or another guard clause. | convention | yes | |
+| `Layout/EmptyLineBeforeBlock` | A blank line before multi-line `if`/`for`/`while`/`repeat`/`do` statements and named function definitions, unless first in their block, first in an indented group, or after a comment. | convention | yes | `IncludeAnonymousFunctions: false` (also check statements opening a multi-line anonymous function, such as `btn.DoClick = function(b)`) |
+| `Layout/EmptyLineBetweenDefs` | Blank lines between a function definition's `end` and the next definition (or its doc comment). | convention | yes | `NumberOfEmptyLines: 1`, `AllowAdjacentOneLineDefs: true` |
+| `Layout/EmptyLines` | No two consecutive blank lines. | convention | yes | |
+| `Layout/EmptyLinesAroundBlockBody` | No blank line directly after a line opening a block or directly before a closer line. | convention | yes | |
+| `Layout/EndOfLine` | LF line endings only (reported once per file). | convention | yes | |
+| `Layout/ExtraSpacing` | No runs of several spaces between tokens (gaps owned by other spacing readers excluded). | convention | yes | `AllowForAlignment: true` (accept a run when the next token lines up with a token on an adjacent line), `ForceEqualSignAlignment: false` (align the `=` of consecutive assignments) |
+| `Layout/IndentationConsistency` | The statements of a block are indented like its first statement; column-aligned lines are accepted. | convention | yes | `AllowIndentedGroups: true` (a run of statements exactly `IndentationWidth` deeper that returns to the block's level afterwards), `IndentationWidth: 2` |
+| `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation. | convention | yes | `IndentationWidth: 2` (spaces per tab in the fix) |
+| `Layout/IndentationWidth` | The first body line of a block is `Width` deeper than its opener line; closers align with the opener line. | convention | yes | `Width: 2` |
+| `Layout/LeadingCommentSpace` | A space after `--`, `---` and `//` (block comments and dash-only lines exempt). | convention | yes | |
+| `Layout/LineLength` | Lines are at most `Max` characters. | convention | no | `Max: 120`, `AllowURI: true`, `IgnoreComments: false` |
+| `Layout/SpaceAfterComma` | A space after every comma followed by code. | convention | yes | |
+| `Layout/SpaceAfterNot` | No space between `!` and its operand. | convention | yes | |
+| `Layout/SpaceAroundOperators` | One space around binary operators and `=`; none around `..`. Unary `-`, `#`, `!`, `not` are not binary. | convention | yes | `ConcatStyle: no_space` (or `space`), `AllowForAlignment: true` (extra spaces before an operator that lines up with the same operator on an adjacent line) |
+| `Layout/SpaceBeforeComma` | No space before a comma. | convention | yes | |
+| `Layout/SpaceBeforeComment` | A space between code and a trailing comment. | convention | yes | |
+| `Layout/SpaceBeforeParen` | No space between a function name and its `(`. | convention | yes | |
+| `Layout/SpaceInsideBraces` | `{ a = 1 }` with one space inside non-empty braces, `{}` when empty. | convention | yes | `EnforcedStyle: space` (or `no_space`) |
+| `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys. | convention | yes | |
+| `Layout/SpaceInsideParens` | No spaces inside `(` `)`. | convention | yes | |
+| `Layout/TrailingEmptyLines` | Exactly one `\n` at the end of the file. | convention | yes | |
+| `Layout/TrailingWhitespace` | No trailing spaces or tabs (outside strings). | convention | yes | |
+
+### Style
+
+| Reader | Checks | Severity | Fix | Options (defaults) |
+|--------|--------|----------|-----|--------------------|
+| `Style/AndOr` | `and`/`or` instead of `&&`/`\|\|`. | convention | yes | |
+| `Style/DocumentationMethod` | Every named function definition is directly preceded by a doc comment starting with `---`. | convention | no | `RequireForLocalFunctions: false` |
+| `Style/InequalityOperator` | `!=` instead of `~=`. | convention | yes | |
+| `Style/Not` | `!` instead of `not`. | convention | yes | |
+| `Style/ParenthesesAroundCondition` | No parentheses wrapping the whole condition of `if`, `elseif`, `while` or `until`. | convention | yes | |
+| `Style/Semicolon` | No semicolons (a `;` between table fields becomes a comma). | convention | yes | |
+| `Style/StringLiterals` | Single quotes, unless the string contains a single quote; long strings exempt. | convention | yes | `EnforcedStyle: single_quotes` (or `double_quotes`) |
+| `Style/TrailingCommaInTable` | No comma after the last item of a table. | convention | yes | `EnforcedStyle: no_comma` (or `comma`: required in multi-line tables) |
+
+### Lint
+
+| Reader | Checks | Severity | Fix | Options (defaults) |
+|--------|--------|----------|-----|--------------------|
+| `Lint/DuplicateTableKey` | The same literal key twice in one table constructor (`a = 1, a = 2`, `['a']`, `[1]`/`[1.0]`). | warning | no | |
+| `Lint/ShadowedLibrary` | Locals, parameters and loop variables named after a GMod library (`local file = ...`); `local render = render` is allowed. | warning | no | `Libraries: [player, team, file, table, sound, string, math, util, net, hook, timer, render, surface, draw, ents, game, engine, input, gui, vgui, http, os, debug, bit]` |
+| `Lint/Syntax` | Unterminated strings and block comments, stray characters, and the first unbalanced bracket, `end` or `until`. | fatal | no | |
+
+### Naming
+
+| Reader | Checks | Severity | Fix | Options (defaults) |
+|--------|--------|----------|-----|--------------------|
+| `Naming/MethodName` | Defined functions and methods (including `local function`) are not lowerCamelCase; PascalCase is allowed for GMod hooks. | convention | no | |
+| `Naming/VariableName` | Locals, parameters and loop variables are not lowerCamelCase (snake_case, SCREAMING_CASE and ConstantStyle allowed). | convention | no | |
+
+### Known setting conflict
+
+`Layout/ExtraSpacing` with `ForceEqualSignAlignment: true` pads the `=` of consecutive
+assignments into one column, while `Layout/SpaceAroundOperators` with `AllowForAlignment: false`
+removes every extra space before an `=`. Enabling both makes the two readers undo each other on
+every autocorrect pass (until the pass limit is reached); keep `AllowForAlignment: true` when
+forcing alignment.
+
+## Flux conventions
+
+The defaults encode the style of the Flux framework:
+
+- 2-space indentation, no tabs, no trailing whitespace, LF line endings, exactly one newline at
+  the end of the file, lines of at most 120 characters.
+- Single-quoted strings unless the string contains `'`; `!` and `!=` instead of `not` and `~=`;
+  `and`/`or` instead of `&&`/`||`.
+- `'a'..b..'c'`: no spaces around `..`, one space around every other binary operator and `=`.
+- `{ a = 1, 'x' }` with spaces inside non-empty braces and `{}` when empty; no spaces inside
+  parentheses or brackets; one space after a comma and none before; no space before a call's `(`.
+- snake_case variables, functions and methods; ConstantStyle classes; GMod hooks keep PascalCase.
+- Every function definition has a doc comment (`--- Summary.` followed by `-- @param` and
+  `-- @return` lines).
+- A blank line before every multi-line block statement and after its `end` (unless next to
+  another opener or closer), after a one-line guard clause (`if !x then return end`) and between
+  function definitions; no blank line right after an opener or right before `end`; never two
+  blank lines in a row.
+- No parentheses around conditions, no trailing commas in tables, no semicolons.
+- Never name a variable after a GMod library (`player`, `file`, `table`, ...): use `actor`,
+  `target`, `client`, `path`, `tbl` and the like.
+- Statement groups may be indented one level deeper to show a scope, as long as the closing
+  statement returns to the block's level:
+
+  ```lua
+  net.Start('flux_notify')
+    net.WriteString(text)
+  net.Send(target)
+  ```
+
+## Shared helper modules
+
+Readers share a few helper modules, which are ordinary modules of their department:
+
+| Module | Provides |
+|--------|----------|
+| `readers::layout::block_structure` | `BlockStructure`: per-line block nesting, line kinds (statement, continuation, closer, comment, blank, inside a multi-line token), opener/closer lines, guard clauses, definitions and doc comments, plus re-indent and blank-line insertion edits. Used by the indentation and blank-line readers. |
+| `readers::layout::spacing` | The gap between adjacent code tokens, unary/binary operator classification and the gaps inside bracket pairs. Used by the token-spacing readers. |
+| `readers::layout::alignment` | Character columns and the alignment checks behind `AllowForAlignment` and `ForceEqualSignAlignment`. |
+| `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
+| `readers::naming::case` | `is_lower_camel_case`. |
+| `readers::lint::nesting` | A bracket and block-keyword tracker used by `Lint/Syntax` and `Lint/DuplicateTableKey`. |
+| `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
+| `readers::style::quotes` | Converting string literals between single and double quotes. |
 
 ## Adding a reader
 
-Readers live in `src/readers/<department>/<snake_case_name>.rs`, one per file; the department modules pick up
-new files automatically through `automod` (`build.rs` makes cargo notice added files), and `inventory` registers
-the reader, so nothing else needs editing.
+Readers live in `src/readers/<department>/<snake_case_name>.rs`, one per file. Add the file **and**
+a `pub mod <snake_case_name>;` line (kept sorted) to `src/readers/<department>/mod.rs`; `inventory`
+then registers the reader, so nothing else needs editing.
 
 ```rust
 //! `Style/Not`.
@@ -186,14 +294,19 @@ mod tests {
   correction is idempotent).
 - Messages are short sentences ending with a period, with numbers in brackets where useful
   (`Line is too long. [130/120]`).
-- Shared helpers: `readers::lint::libraries::GMOD_LIBRARIES`, `readers::naming::case::is_lower_camel_case` and
-  `readers::style::quotes::to_single_quoted`.
+- Code style: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, no `unsafe`, no `unwrap()` outside
+  tests, and `///`/`//!` documentation comments only (no `//` comments).
 
 ## Development
 
 ```
 cargo test                                   # unit and integration tests
-cargo test -- --ignored                      # also lex the whole Flux corpus at /home/luna/code/flux-ce
+cargo test -- --ignored                      # also run over the whole Flux corpus at /home/luna/code/flux-ce:
+                                             # lexing, and checks that every correction (all readers together,
+                                             # and the layout groups alone) keeps the code and is idempotent
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+An example configuration showing the common options is in
+[`examples/.proofreader.yml`](examples/.proofreader.yml).

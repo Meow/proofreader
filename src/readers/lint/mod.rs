@@ -1,3 +1,7 @@
 //! Lint readers: likely bugs.
 
-automod::dir!(pub "src/readers/lint");
+pub mod duplicate_table_key;
+pub mod libraries;
+pub mod nesting;
+pub mod shadowed_library;
+pub mod syntax;
