@@ -15,6 +15,7 @@ use walkdir::WalkDir;
 
 use crate::config::{Config, ConfigError, ConfigStore, ReaderConfig, absolute_path};
 use crate::corrector;
+use crate::directive::Directives;
 use crate::offense::{Offense, Severity};
 use crate::reader::{Context, Reader, find_reader, registry};
 use crate::source::Source;
@@ -303,7 +304,8 @@ fn reader_error(reader: &str, message: &str, source: &Source) -> Offense {
     }
 }
 
-/// Runs every enabled reader over `source`.
+/// Runs every enabled reader over `source`, dropping the offenses switched off by inline
+/// [directives](crate::directive) before they are reported or corrected.
 ///
 /// With `options.fix`, fixes of correctable offenses are applied and the text is re-inspected
 /// until a pass applies nothing or `max_passes` is reached. The result holds the offenses
@@ -349,6 +351,10 @@ pub fn inspect_source(
                 }
             }
         });
+        let directives = Directives::parse(pass_source);
+        if !directives.is_empty() {
+            offenses.retain(|offense| !directives.suppresses(offense));
+        }
         if !options.fix {
             remaining = offenses;
             break;
@@ -526,6 +532,24 @@ mod tests {
             inspect_source(&Source::new("x.lua", "local a = 1\n"), &config, &options);
         assert!(again.is_empty());
         assert!(unchanged.is_none());
+    }
+
+    #[test]
+    fn inline_disabled_offenses_are_neither_reported_nor_corrected() {
+        let config = Config::defaults(Path::new("."));
+        let options = Options {
+            fix: true,
+            filter: ReaderFilter::single("Layout/TrailingWhitespace"),
+            ..Options::default()
+        };
+        let text = "a = 1  \n-- proofreader-disable-next-line Layout/TrailingWhitespace\nb = 2  \n";
+        let (offenses, corrected) = inspect_source(&Source::new("x.lua", text), &config, &options);
+        assert_eq!(
+            corrected.as_deref(),
+            Some("a = 1\n-- proofreader-disable-next-line Layout/TrailingWhitespace\nb = 2  \n")
+        );
+        assert_eq!(offenses.len(), 1);
+        assert_eq!((offenses[0].line, offenses[0].corrected), (1, true));
     }
 
     #[test]

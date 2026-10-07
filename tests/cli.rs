@@ -257,6 +257,34 @@ fn only_and_except_select_readers() {
 }
 
 #[test]
+fn inline_directives_disable_readers() {
+    let dir = scratch("directives");
+    let source = "local a = 1  \n\
+                  local b = 2   -- proofreader-disable-line Layout/TrailingWhitespace\n\
+                  -- proofreader-disable-next-line\n\
+                  local c = 3  \n\
+                  // proofreader-disable Layout\n\
+                  local d = 4  \n\
+                  // proofreader-enable\n\
+                  local e = 5  \n";
+    let file = dir.join("directives.lua");
+    fs::write(&file, source).expect("write file");
+    let args = ["--only", "Layout/TrailingWhitespace", "-f", "quiet"];
+    let output = proofreader(&dir, &args);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(text.contains("directives.lua:1:12:"));
+    assert!(text.contains("directives.lua:8:12:"));
+    assert!(text.ends_with("1 file inspected, 2 offenses detected, 2 offenses autocorrectable\n"));
+    let fixed = proofreader(&dir, &[&args[..], &["--fix"]].concat());
+    assert_eq!(fixed.status.code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(&file).expect("file"),
+        source.replace("1  \n", "1\n").replace("5  \n", "5\n")
+    );
+}
+
+#[test]
 fn fail_level_controls_the_exit_code() {
     let output = proofreader(
         &fixtures(),

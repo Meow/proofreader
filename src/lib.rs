@@ -7,6 +7,7 @@
 pub mod cli;
 pub mod config;
 pub mod corrector;
+pub mod directive;
 pub mod formatter;
 pub mod lexer;
 pub mod offense;
