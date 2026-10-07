@@ -11,6 +11,8 @@ use crate::source::Source;
 ///
 /// A body or closer aligned with the line where the opener's statement starts is accepted as
 /// well, for openers that sit on a continuation line. Continuation lines are never checked.
+/// The fix for a body moves the whole body by the same amount, so that column alignment inside
+/// it (and the spacing readers that honour it) is not disturbed halfway through a fix run.
 pub struct IndentationWidth;
 
 impl Reader for IndentationWidth {
@@ -76,7 +78,7 @@ fn check_bodies(ctx: &mut Context, source: &Source, structure: &BlockStructure, 
         ctx.add_offense_with_fix(
             indentation_range(source, line, first),
             format!("Use {width} (not {relative}) spaces for indentation."),
-            structure.reindent(source, line, base + width),
+            structure.reindent_body(source, block, base + width),
         );
     }
 }
@@ -265,6 +267,25 @@ mod tests {
         expect_no_offenses(READER, "function f()\n\ty()\nend\n");
         expect_no_offenses(READER, "function f()\n  -- comment\n  y()\nend\n");
         expect_no_offenses(READER, "function f()\n--[[\n  x\n]]\n  y()\nend\n");
+    }
+
+    #[test]
+    fn autocorrects_the_whole_body_at_once() {
+        expect_correction(
+            READER,
+            "local t = {\n    [A]    = 0,\n    [BBBB] = -1,\n    [CC]   = 1\n  }\n",
+            "local t = {\n  [A]    = 0,\n  [BBBB] = -1,\n  [CC]   = 1\n}\n",
+        );
+        expect_correction(
+            READER,
+            "if x then\n      y()\n      if z then\n        w()\n      end\n      -- note\n      v()\nend\n",
+            "if x then\n  y()\n  if z then\n    w()\n  end\n  -- note\n  v()\nend\n",
+        );
+        expect_correction(
+            READER,
+            "if x then\ny()\n  z()\nend\n",
+            "if x then\n  y()\n    z()\nend\n",
+        );
     }
 
     #[test]

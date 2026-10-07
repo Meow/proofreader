@@ -763,6 +763,42 @@ impl BlockStructure {
         }
         edits
     }
+
+    /// Edits that re-indent the first body line of `block` to `width` spaces and shift every
+    /// other line of the body (comments, nested blocks and their closers included) by the same
+    /// amount, so that the body keeps its shape and any column alignment inside it. Blank lines,
+    /// lines inside multi-line tokens, lines whose indentation holds tabs and lines indented less
+    /// than the first body line are left alone. Without a closer, only the first body line and
+    /// its continuations move.
+    pub fn reindent_body(&self, source: &Source, block: &Block, width: usize) -> Vec<Edit> {
+        let (Some(first), Some(start), Some(end)) =
+            (block.first_body_line, block.body_start, block.close_line())
+        else {
+            return block
+                .first_body_line
+                .map(|line| self.reindent(source, line, width))
+                .unwrap_or_default();
+        };
+        let current = source.indentation(first).len();
+        let mut edits = Vec::new();
+        for line in start.line + 1..end {
+            if matches!(self.kind(line), LineKind::Blank | LineKind::Skipped) {
+                continue;
+            }
+            let indentation = source.indentation(line);
+            if indentation.contains('\t') || indentation.len() < current {
+                continue;
+            }
+            let target = indentation.len() + width - current;
+            if target == indentation.len() {
+                continue;
+            }
+            if let Some(edit) = reindent_line(source, line, target) {
+                edits.push(edit);
+            }
+        }
+        edits
+    }
 }
 
 /// An edit that sets the indentation of line `n` to `width` spaces, covering its first token.
@@ -1149,6 +1185,34 @@ mod tests {
         assert_eq!(
             structure.reindent(&source, 1, 2),
             vec![Edit::replace(0..1, "  x")]
+        );
+    }
+
+    #[test]
+    fn reindents_a_whole_body() {
+        let (source, structure) = analyse(
+            "t = {\n    a   = 1,\n\n    -- c\n    bb  = {\n      d = 2\n    },\n  x = 3\n  }\n",
+        );
+        let block = &structure.blocks()[0];
+        assert_eq!(
+            structure.reindent_body(&source, block, 2),
+            vec![
+                Edit::replace(6..11, "  a"),
+                Edit::replace(20..28, "  -- c"),
+                Edit::replace(29..35, "  bb"),
+                Edit::replace(41..48, "    d"),
+                Edit::replace(53..58, "  }"),
+            ]
+        );
+        let (source, structure) = analyse("if x then\n      y()\n    z()\nend\n");
+        assert_eq!(
+            structure.reindent_body(&source, &structure.blocks()[0], 2),
+            vec![Edit::replace(10..17, "  y")]
+        );
+        let (source, structure) = analyse("if x then\n    y()\n");
+        assert_eq!(
+            structure.reindent_body(&source, &structure.blocks()[0], 2),
+            vec![Edit::replace(10..15, "  y")]
         );
     }
 
