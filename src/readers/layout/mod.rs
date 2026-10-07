@@ -15,6 +15,7 @@ pub mod indentation_consistency;
 pub mod indentation_style;
 pub mod indentation_width;
 pub mod leading_comment_space;
+pub mod line_breaking;
 pub mod line_length;
 pub mod space_after_comma;
 pub mod space_after_not;

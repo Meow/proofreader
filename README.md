@@ -124,7 +124,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation. | convention | yes | `IndentationWidth: 2` (spaces per tab in the fix) |
 | `Layout/IndentationWidth` | The first body line of a block is `Width` deeper than its opener line; closers align with the opener line. | convention | yes | `Width: 2` |
 | `Layout/LeadingCommentSpace` | A space after `--`, `---` and `//` (block comments and dash-only lines exempt). | convention | yes | |
-| `Layout/LineLength` | Lines are at most `Max` characters. | convention | no | `Max: 120`, `AllowURI: true`, `IgnoreComments: false` |
+| `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
 | `Layout/SpaceAfterComma` | A space after every comma followed by code. | convention | yes | |
 | `Layout/SpaceAfterNot` | No space between `!` and its operand. | convention | yes | |
 | `Layout/SpaceAroundOperators` | One space around binary operators and `=`; none around `..`. Unary `-`, `#`, `!`, `not` are not binary. | convention | yes | `ConcatStyle: no_space` (or `space`), `AllowForAlignment: true` (extra spaces before an operator that lines up with the same operator on an adjacent line) |
@@ -211,6 +211,7 @@ Readers share a few helper modules, which are ordinary modules of their departme
 |--------|----------|
 | `readers::layout::block_structure` | `BlockStructure`: per-line block nesting, line kinds (statement, continuation, closer, comment, blank, inside a multi-line token), opener/closer lines, guard clauses, definitions and doc comments, plus re-indent and blank-line insertion edits. Used by the indentation and blank-line readers. |
 | `readers::layout::spacing` | The gap between adjacent code tokens, unary/binary operator classification and the gaps inside bracket pairs. Used by the token-spacing readers. |
+| `readers::layout::line_breaking` | `LineBreaker`: plans the whitespace-only line breaks of `Layout/LineLength`'s fix, simulating follow-up passes to check that a line can be finished. |
 | `readers::layout::alignment` | Character columns and the alignment checks behind `AllowForAlignment` and `ForceEqualSignAlignment`. |
 | `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
 | `readers::naming::case` | `is_lower_camel_case`. |
@@ -303,7 +304,9 @@ mod tests {
 cargo test                                   # unit and integration tests
 cargo test -- --ignored                      # also run over the whole Flux corpus at /home/luna/code/flux-ce:
                                              # lexing, and checks that every correction (all readers together,
-                                             # and the layout groups alone) keeps the code and is idempotent
+                                             # and the layout groups alone) keeps the code and is idempotent,
+                                             # and that Layout/LineLength alone only breaks lines, shortens
+                                             # them and adds no offenses of other readers
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

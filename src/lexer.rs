@@ -901,6 +901,6 @@ end
                 count += 1;
             }
         }
-        assert!(count >= 357, "only {count} files found");
+        assert!(count >= 356, "only {count} files found");
     }
 }

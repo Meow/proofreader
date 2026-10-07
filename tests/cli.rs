@@ -52,15 +52,15 @@ fn clean_file_passes_with_all_readers() {
 fn offenses_are_reported_clang_style() {
     let output = proofreader(&fixtures(), &["offenses.lua", "--only", REFERENCE_READERS]);
     assert_eq!(output.status.code(), Some(1));
-    let long = format!("local message = '{}'", "x".repeat(112));
+    let long = format!("local message = '{}'", "x".repeat(118));
     let expected = format!(
         "Inspecting 1 file\nC\n\nOffenses:\n\n\
          offenses.lua:1:12: C: [Correctable] Layout/TrailingWhitespace: Trailing whitespace detected.\n\
          local a = 1  \n           ^^\n\
          offenses.lua:2:12: C: [Correctable] Layout/TrailingWhitespace: Trailing whitespace detected.\n\
          local b = 2\t\n           ^\n\
-         offenses.lua:3:121: C: Layout/LineLength: Line is too long. [130/120]\n\
-         {long}\n{}^^^^^^^^^^\n\
+         offenses.lua:3:121: C: Layout/LineLength: Line is too long. [136/120]\n\
+         {long}\n{}^^^^^^^^^^^^^^^^\n\
          offenses.lua:6:13: C: [Correctable] Layout/TrailingWhitespace: Trailing whitespace detected.\n\
          return a + b   \n            ^^^\n\n\
          1 file inspected, 4 offenses detected, 3 offenses autocorrectable\n",
@@ -151,7 +151,7 @@ fn nested_config_inherits_and_overrides() {
     assert_eq!(output.status.code(), Some(1));
     let text = stdout(&output);
     assert!(
-        text.contains("nested/long.lua:2:41: C: Layout/LineLength: Line is too long. [46/40]\n")
+        text.contains("nested/long.lua:2:41: C: Layout/LineLength: Line is too long. [50/40]\n")
     );
     assert!(
         text.contains("nested/deep/inner.lua:1:24: C: [Correctable] Layout/TrailingWhitespace")
@@ -297,7 +297,7 @@ fn config_option_forces_one_file() {
         ],
     );
     let text = stdout(&output);
-    assert!(text.contains("offenses.lua:3:41: C: Layout/LineLength: Line is too long. [130/40]"));
+    assert!(text.contains("offenses.lua:3:41: C: Layout/LineLength: Line is too long. [136/40]"));
     assert!(
         !text.contains("offenses.lua:4:"),
         "IgnoreComments comes from the inherited file"
@@ -319,7 +319,7 @@ fn show_readers_lists_and_describes() {
     assert_eq!(
         stdout(&nested),
         "Layout/LineLength:\n  Description: Checks that lines are not longer than the configured maximum.\n  \
-         Enabled: true\n  Severity: convention\n  AutoCorrect: true\n  Max: 40\n  AllowURI: true\n  IgnoreComments: true\n"
+         Enabled: true\n  Severity: convention\n  AutoCorrect: true\n  Max: 40\n  AllowURI: true\n  IgnoreComments: true\n  IndentationWidth: 2\n"
     );
     let unknown = proofreader(&fixtures(), &["--show-readers", "Nope"]);
     assert_eq!(unknown.status.code(), Some(2));

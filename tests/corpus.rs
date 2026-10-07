@@ -1,6 +1,7 @@
 //! Autocorrects the whole Flux corpus with every reader at once and checks that the code is
 //! unchanged apart from the rewrites the style readers are meant to make.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use proofreader::config::Config;
@@ -141,6 +142,101 @@ fn all_corrections_keep_the_code_of_the_flux_corpus() {
         );
     }
     assert!(changed > 0);
+}
+
+/// The kinds and exact texts of the code tokens of `text`, comments included.
+fn exact_tokens(text: &str) -> Vec<Normalized> {
+    let source = Source::new("t.lua", text);
+    source
+        .code_tokens()
+        .map(|token| (token.kind, source.text_of(token).to_owned()))
+        .collect()
+}
+
+/// The lines of `source` that `Layout/LineLength` reports.
+fn long_lines(source: &Source, config: &Config) -> Vec<String> {
+    let options = Options {
+        filter: ReaderFilter::single("Layout/LineLength"),
+        ..Options::default()
+    };
+    let (offenses, _) = inspect_source(source, config, &options);
+    offenses
+        .iter()
+        .map(|offense| source.line(offense.line).to_owned())
+        .collect()
+}
+
+/// Offense counts per reader, `Layout/LineLength` excluded, with every reader running.
+fn other_offense_counts(source: &Source, config: &Config) -> HashMap<&'static str, usize> {
+    let (offenses, _) = inspect_source(source, config, &Options::default());
+    let mut counts = HashMap::new();
+    for offense in offenses
+        .iter()
+        .filter(|offense| offense.reader != "Layout/LineLength")
+    {
+        *counts.entry(offense.reader).or_insert(0) += 1;
+    }
+    counts
+}
+
+#[test]
+#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+fn line_length_corrections_only_break_lines() {
+    let root = Path::new(CORPUS);
+    let config = Config::defaults(root);
+    let options = Options {
+        fix: true,
+        filter: ReaderFilter::single("Layout/LineLength"),
+        ..Options::default()
+    };
+    let (mut before_total, mut after_total) = (0, 0);
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "lua"))
+    {
+        let path = entry.path();
+        let text = std::fs::read_to_string(path).expect("UTF-8 source");
+        let original = Source::new(path, text.as_str());
+        let before = long_lines(&original, &config);
+        before_total += before.len();
+        let (_, corrected) = inspect_source(&original, &config, &options);
+        let Some(corrected) = corrected else {
+            after_total += before.len();
+            continue;
+        };
+        let display = path.display();
+        assert_eq!(
+            exact_tokens(&text),
+            exact_tokens(&corrected),
+            "{display}: the code changed"
+        );
+        let fixed = Source::new(path, corrected.as_str());
+        let (_, again) = inspect_source(&fixed, &config, &options);
+        assert!(again.is_none(), "{display} is not idempotent");
+        let mut remaining = before.clone();
+        for line in long_lines(&fixed, &config) {
+            let position = remaining
+                .iter()
+                .position(|original| *original == line)
+                .unwrap_or_else(|| panic!("{display}: new or longer long line {line:?}"));
+            remaining.swap_remove(position);
+            after_total += 1;
+        }
+        let old_counts = other_offense_counts(&original, &config);
+        for (reader, count) in other_offense_counts(&fixed, &config) {
+            let previous = old_counts.get(reader).copied().unwrap_or(0);
+            assert!(
+                count <= previous,
+                "{display}: {reader} reports {count} offenses instead of {previous}"
+            );
+        }
+    }
+    assert!(
+        after_total < before_total,
+        "{after_total} of {before_total} long lines remain"
+    );
 }
 
 #[test]
