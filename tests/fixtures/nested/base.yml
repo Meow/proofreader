@@ -1,0 +1,7 @@
+Layout/LineLength:
+  Max: 200
+  IgnoreComments: true
+
+Layout/TrailingWhitespace:
+  Exclude:
+    - 'legacy.lua'
