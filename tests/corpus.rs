@@ -17,7 +17,8 @@ type Normalized = (TokenKind, String);
 
 /// The code tokens of `text`, with the spellings the style readers rewrite mapped onto one form:
 /// `not`/`!`, `~=`/`!=`, `&&`/`and` and `||`/`or` are unified, strings are compared by their
-/// content with quote escapes dropped, and comments without whitespace.
+/// content with quote escapes dropped, names without the `_` prefix that marks them unused, and
+/// comments without whitespace and without that prefix on `@param` names.
 fn normalized(text: &str) -> Vec<Normalized> {
     let source = Source::new("t.lua", text);
     source
@@ -34,9 +35,16 @@ fn normalized(text: &str) -> Vec<Normalized> {
                     let inner = text.get(1..text.len().saturating_sub(1)).unwrap_or(text);
                     (token.kind, without_quote_escapes(inner))
                 }
+                TokenKind::Name => (
+                    token.kind,
+                    text.strip_prefix('_').unwrap_or(text).to_owned(),
+                ),
                 TokenKind::Comment { .. } => (
                     token.kind,
-                    text.chars().filter(|c| !c.is_whitespace()).collect(),
+                    text.chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                        .replace("@param_", "@param"),
                 ),
                 _ => (token.kind, text.to_owned()),
             }

@@ -14,7 +14,8 @@
 //!
 //! The first candidate whose lines all fit wins. Otherwise the first one whose remaining long
 //! lines can be broken in turn wins, which is checked by simulating the next autocorrect passes
-//! a few levels deep. Lines where nothing works keep their offense without a fix.
+//! a few levels deep. Lines where nothing works keep their offense without a fix, and so do
+//! lines holding Lumen markup, whose nesting the strategies do not know.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -274,8 +275,9 @@ impl<'a> LineBreaker<'a> {
     }
 
     /// The code of line `number`, unless the line cannot be broken: it holds no code, starts or
-    /// ends inside a multi-line token, is indented with tabs, contains padding between tokens
-    /// (usually alignment with its neighbours), or overflows only because of a trailing comment.
+    /// ends inside a multi-line token, holds markup, is indented with tabs, contains padding
+    /// between tokens (usually alignment with its neighbours), or overflows only because of a
+    /// trailing comment.
     fn scan(&self, number: u32) -> Option<Line> {
         let source = self.source;
         if !matches!(
@@ -298,7 +300,10 @@ impl<'a> LineBreaker<'a> {
             .iter()
             .filter(|token| !token.is_trivia() && token.kind != TokenKind::Eof)
         {
-            if token.is_multiline() || comment.is_some() || token.kind == TokenKind::Unknown {
+            if token.is_multiline()
+                || comment.is_some()
+                || matches!(token.kind, TokenKind::Unknown | TokenKind::Markup)
+            {
                 return None;
             }
             if token.kind.is_comment() {
@@ -502,7 +507,8 @@ impl<'a> LineBreaker<'a> {
     /// closer shift with the items of this line, and the closer moves to a line of its own.
     ///
     /// The line must end with a comma between two items, or with the opening of a block
-    /// inside the last item whose body starts on the next line (`function(a)`, `{`).
+    /// inside the last item whose body starts on the next line (`function(a)`, `{`). The lines
+    /// up to the closer may not hold Lumen markup.
     fn unfold_across_lines(
         &self,
         line: &Line,
@@ -534,9 +540,17 @@ impl<'a> LineBreaker<'a> {
             isize::try_from(width).ok()?
         };
         let skipped = source.lines_inside_multiline_tokens();
+        let markup = source.lines_inside_markup();
         let closer_first = source.first_code_token_on_line(closer.line) == Some(&closer);
         let mut indents = Vec::new();
         for number in line.number + 1..=closer.line {
+            if markup.contains(&number)
+                || source
+                    .code_tokens_on_line(number)
+                    .any(|token| token.kind == TokenKind::Markup)
+            {
+                return None;
+            }
             if skipped.contains(&number) || source.is_blank(number) {
                 continue;
             }

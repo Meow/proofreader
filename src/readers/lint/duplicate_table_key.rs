@@ -284,4 +284,19 @@ mod tests {
         let src = "t = { a = 1, a = 2 }\n";
         assert_eq!(autocorrect(READER, src), src);
     }
+
+    #[test]
+    fn looks_into_tables_inside_markup() {
+        expect_no_offenses_lumen(
+            READER,
+            "local t = { a = <view a={{ a = 1 }} b={x}/>, b = <text a=\"1\" a=\"2\"/> }\n",
+        );
+        expect_offense_lumen(
+            READER,
+            "return <view style={{ a = 1, a = 2 }}/>\n",
+            1,
+            30,
+            "Duplicate key `a` in table constructor.",
+        );
+    }
 }

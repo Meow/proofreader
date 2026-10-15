@@ -2,6 +2,7 @@
 
 use yaml_rust2::Yaml;
 
+use crate::lumen::opens_splice;
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::layout::alignment::{
@@ -17,10 +18,12 @@ use crate::token::TokenKind;
 /// other spacing readers own: around binary operators and `=` (`Layout/SpaceAroundOperators`),
 /// directly inside brackets, braces and parentheses (`Layout/SpaceInside*`), before a comma
 /// (`Layout/SpaceBeforeComma`), before a call's `(` (`Layout/SpaceBeforeParen`) and after `!`
-/// (`Layout/SpaceAfterNot`). With `AllowForAlignment`, a run is accepted when the token after it
-/// starts at the same column as a token on an adjacent line. With `ForceEqualSignAlignment`, the
-/// `=` of directly consecutive assignment lines with the same indentation must line up; groups
-/// that do not are aligned at the leftmost column that keeps a space before every `=`.
+/// (`Layout/SpaceAfterNot`). The whitespace just inside the braces around Lua spliced into
+/// Lumen markup (`{ name }`) is not checked either. With `AllowForAlignment`, a run is accepted
+/// when the token after it starts at the same column as a token on an adjacent line. With
+/// `ForceEqualSignAlignment`, the `=` of directly consecutive assignment lines with the same
+/// indentation must line up; groups that do not are aligned at the leftmost column that keeps a
+/// space before every `=`.
 pub struct ExtraSpacing;
 
 impl Reader for ExtraSpacing {
@@ -87,6 +90,8 @@ fn owned_elsewhere(source: &Source, code_index: usize, gap: Gap) -> bool {
             TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Comma
         )
         || (after == TokenKind::LParen && is_callee_end(before))
+        || (before == TokenKind::Markup && opens_splice(source.text_of(gap.before)))
+        || source.closes_splice(gap.after)
 }
 
 /// Reports the `=` signs of every assignment group that is not aligned yet, with fixes that move
@@ -211,5 +216,25 @@ mod tests {
             "local x  =  {  a, b }\n",
         );
         expect_correction(READER, "return\t\tx\n", "return x\n");
+    }
+
+    #[test]
+    fn leaves_markup_and_splice_braces_alone() {
+        expect_no_offenses_lumen(
+            READER,
+            "return <view  a=\"1\"   b={  x  } {...  props  }>two  spaces  {  y  }</view>\n",
+        );
+    }
+
+    #[test]
+    fn checks_lua_around_markup() {
+        expect_correction_lumen(READER, "return  <view/>\n", "return <view/>\n");
+        expect_offense_lumen(
+            READER,
+            "return <view a={f(x,  y)}/>\n",
+            1,
+            21,
+            "Unnecessary spacing detected.",
+        );
     }
 }

@@ -78,4 +78,10 @@ mod tests {
         expect_correction(READER, "y = ! \t (a)\n", "y = !(a)\n");
         expect_correction(READER, "y = ! ! x\n", "y = !!x\n");
     }
+
+    #[test]
+    fn checks_lua_before_markup() {
+        expect_correction_lumen(READER, "return ! <view/>\n", "return !<view/>\n");
+        expect_no_offenses_lumen(READER, "return <text>! x</text>\n");
+    }
 }

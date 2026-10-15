@@ -69,4 +69,9 @@ mod tests {
         expect_correction(READER, "x()-- note\n", "x() -- note\n");
         expect_correction(READER, "x = 1--note\ny()--z\n", "x = 1 --note\ny() --z\n");
     }
+
+    #[test]
+    fn markup_text_is_not_a_comment() {
+        expect_no_offenses_lumen(READER, "return <text>a--b <!--c--></text>\n");
+    }
 }

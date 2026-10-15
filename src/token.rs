@@ -1,4 +1,4 @@
-//! Tokens produced by the GLua [lexer](crate::lexer).
+//! Tokens produced by the GLua and Lumen [lexer](crate::lexer).
 
 use std::ops::Range;
 
@@ -19,6 +19,10 @@ pub enum TokenKind {
         /// Whether this is a block comment (`--[[ ]]` or `/* */`).
         long: bool,
     },
+    /// A stretch of Lumen markup (see [`crate::lumen`]): tags with their names, attributes and
+    /// quoted values, text children, `<!-- -->` comments, and the `{`, `{...` and `}` that
+    /// delimit a Lua expression spliced into the markup. Only `.lumen` files contain it.
+    Markup,
     /// `and`
     And,
     /// `break`
@@ -200,6 +204,24 @@ impl TokenKind {
                 | TokenKind::True
                 | TokenKind::Until
                 | TokenKind::While
+        )
+    }
+
+    /// Whether a token of this kind can end an operand: a name, a literal, `...` or a closing
+    /// bracket.
+    pub fn ends_operand(self) -> bool {
+        matches!(
+            self,
+            TokenKind::Name
+                | TokenKind::Number
+                | TokenKind::String { .. }
+                | TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Nil
+                | TokenKind::Dots
         )
     }
 

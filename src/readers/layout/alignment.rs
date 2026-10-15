@@ -132,7 +132,7 @@ fn assignment_on_line(source: &Source, line: u32) -> Option<AssignmentLine<'_>> 
 /// Groups of two or more assignment lines that follow each other directly (no blank or other
 /// line in between) and share their indentation, for `ForceEqualSignAlignment`.
 pub fn assignment_groups(source: &Source) -> Vec<Vec<AssignmentLine<'_>>> {
-    let skipped = source.lines_inside_multiline_tokens();
+    let skipped = source.opaque_lines();
     let mut groups = Vec::new();
     let mut current: Vec<AssignmentLine> = Vec::new();
     let mut indentation = "";

@@ -1,4 +1,5 @@
-//! A RuboCop-like linter and autocorrector for GLua, the Lua dialect used by Garry's Mod.
+//! A RuboCop-like linter and autocorrector for GLua, the Lua dialect used by Garry's Mod, and for
+//! Flux's Lumen templates, GLua with markup in expression position (see [`lumen`]).
 //!
 //! Source files are lexed into [`token::Token`]s, wrapped in a [`source::Source`] and handed to
 //! every enabled [`reader::Reader`]. Readers report [`offense::Offense`]s, optionally with a fix
@@ -10,6 +11,7 @@ pub mod corrector;
 pub mod directive;
 pub mod formatter;
 pub mod lexer;
+pub mod lumen;
 pub mod offense;
 pub mod reader;
 pub mod readers;

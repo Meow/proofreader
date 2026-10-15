@@ -2,8 +2,10 @@
 //!
 //! [`BlockStructure::new`] walks the code tokens of a [`Source`] once, keeping a stack of open
 //! blocks (`function`, `if`/`elseif`/`else`, `for`, `while`, `repeat`, `do` and the bracket pairs)
-//! and classifying every line as blank, comment-only, inside a multi-line string or comment, a
-//! statement start, a continuation of the previous line, or a closer line.
+//! and classifying every line as blank, comment-only, inside a multi-line string or comment or
+//! inside the markup of a Lumen template, a statement start, a continuation of the previous line,
+//! or a closer line. Markup tokens take no part in the block stack; the Lua spliced into markup
+//! does, but its lines are inside markup and classified as skipped.
 
 use std::collections::HashSet;
 
@@ -112,7 +114,7 @@ pub enum LineKind {
     Blank,
     /// No code, only comments (or unrecognised bytes).
     Comment,
-    /// Starts inside a multi-line string or comment.
+    /// Starts inside a multi-line string or comment, or inside the markup of a Lumen template.
     Skipped,
     /// Starts a statement, or an item of a bracket whose opener ends its line.
     Statement,
@@ -140,6 +142,9 @@ pub struct LineInfo {
 pub struct BlockStructure {
     blocks: Vec<Block>,
     lines: Vec<LineInfo>,
+    /// Lines inside markup that do not start inside a multi-line token, whose indentation a
+    /// re-indentation may shift.
+    markup: HashSet<u32>,
 }
 
 /// Whether `kind` starts a line as a closer.
@@ -507,7 +512,7 @@ impl BlockStructure {
         let mut builder = Builder {
             source,
             tokens,
-            skipped: source.lines_inside_multiline_tokens(),
+            skipped: source.opaque_lines(),
             blocks: Vec::new(),
             stack: Vec::new(),
             lines: vec![LineInfo::default(); count as usize],
@@ -517,9 +522,16 @@ impl BlockStructure {
             builder.visit(index);
         }
         builder.fill_until(count + 1);
+        let inside_tokens = source.lines_inside_multiline_tokens();
+        let markup = source
+            .lines_inside_markup()
+            .into_iter()
+            .filter(|line| !inside_tokens.contains(line))
+            .collect();
         BlockStructure {
             blocks: builder.blocks,
             lines: builder.lines,
+            markup,
         }
     }
 
@@ -613,13 +625,15 @@ impl BlockStructure {
             )
     }
 
-    /// The continuation lines that follow line `n`, up to the next statement or closer line;
-    /// blank, comment and skipped lines in between are passed over.
-    pub fn continuation_lines(&self, n: u32) -> Vec<u32> {
+    /// The lines that move with line `n` when it is re-indented, up to the next statement or
+    /// closer line: its continuation lines and the lines inside markup that starts on `n` or on
+    /// one of its continuation lines. Blank, comment and other skipped lines are passed over.
+    fn lines_moving_with(&self, n: u32) -> Vec<u32> {
         let mut lines = Vec::new();
         for line in n + 1..=self.line_count() {
             match self.kind(line) {
                 LineKind::Continuation => lines.push(line),
+                LineKind::Skipped if self.markup.contains(&line) => lines.push(line),
                 LineKind::Blank | LineKind::Comment | LineKind::Skipped => {}
                 LineKind::Statement | LineKind::Closer => break,
             }
@@ -734,9 +748,9 @@ impl BlockStructure {
         lines
     }
 
-    /// Edits that re-indent line `n` to `width` spaces and shift its continuation lines and the
-    /// comment lines attached above it by the same amount. Lines whose indentation holds tabs are
-    /// left alone.
+    /// Edits that re-indent line `n` to `width` spaces and shift its continuation lines, the lines
+    /// of markup it starts and the comment lines attached above it by the same amount. Lines
+    /// whose indentation holds tabs are left alone.
     ///
     /// Each edit replaces the indentation together with the line's first token, so that it
     /// conflicts with any other edit touching the start of that line.
@@ -747,7 +761,7 @@ impl BlockStructure {
         for line in comments
             .into_iter()
             .chain(std::iter::once(n))
-            .chain(self.continuation_lines(n))
+            .chain(self.lines_moving_with(n))
         {
             let indentation = source.indentation(line);
             if indentation.contains('\t') {
@@ -765,11 +779,11 @@ impl BlockStructure {
     }
 
     /// Edits that re-indent the first body line of `block` to `width` spaces and shift every
-    /// other line of the body (comments, nested blocks and their closers included) by the same
-    /// amount, so that the body keeps its shape and any column alignment inside it. Blank lines,
-    /// lines inside multi-line tokens, lines whose indentation holds tabs and lines indented less
-    /// than the first body line are left alone. Without a closer, only the first body line and
-    /// its continuations move.
+    /// other line of the body (comments, nested blocks, their closers and lines inside markup
+    /// included) by the same amount, so that the body keeps its shape and any column alignment
+    /// inside it. Blank lines, lines inside multi-line tokens, lines whose indentation holds tabs
+    /// and lines indented less than the first body line are left alone. Without a closer, only
+    /// the first body line and the lines moving with it move.
     pub fn reindent_body(&self, source: &Source, block: &Block, width: usize) -> Vec<Edit> {
         let (Some(first), Some(start), Some(end)) =
             (block.first_body_line, block.body_start, block.close_line())
@@ -782,7 +796,10 @@ impl BlockStructure {
         let current = source.indentation(first).len();
         let mut edits = Vec::new();
         for line in start.line + 1..end {
-            if matches!(self.kind(line), LineKind::Blank | LineKind::Skipped) {
+            let kind = self.kind(line);
+            if kind == LineKind::Blank
+                || (kind == LineKind::Skipped && !self.markup.contains(&line))
+            {
                 continue;
             }
             let indentation = source.indentation(line);
@@ -1155,7 +1172,7 @@ mod tests {
     #[test]
     fn statement_and_continuation_lines() {
         let (_, structure) = analyse("local x = foo(a,\n  b)\n  :c()\n\n-- note\ny()\n");
-        assert_eq!(structure.continuation_lines(1), vec![2, 3]);
+        assert_eq!(structure.lines_moving_with(1), vec![2, 3]);
         assert_eq!(structure.statement_line(3), 1);
         assert_eq!(structure.statement_line(6), 6);
     }
@@ -1313,5 +1330,25 @@ mod tests {
             assert!(offenses.is_empty(), "offenses left in {}", path.display());
         }
         assert!(changed > 0);
+    }
+
+    #[test]
+    fn lines_inside_markup_are_skipped() {
+        let source = Source::new(
+            "test.lumen",
+            "local function f()\n  return <view>\n    {map(x, function(y)\n      return y\n    \
+             end)}\n  </view>\nend\n",
+        );
+        let structure = BlockStructure::new(&source);
+        let found: Vec<LineKind> = (1..=7).map(|line| structure.kind(line)).collect();
+        assert_eq!(
+            found,
+            vec![
+                Statement, Statement, Skipped, Skipped, Skipped, Skipped, Closer
+            ]
+        );
+        assert_eq!(structure.opener_line_of_closer(7), Some(1));
+        let edits = structure.reindent(&source, 2, 4);
+        assert_eq!(edits.len(), 5);
     }
 }

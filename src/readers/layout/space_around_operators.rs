@@ -333,4 +333,30 @@ mod tests {
         expect_correction(READER, "a   = 1\nbcd =2\n", "a   = 1\nbcd = 2\n");
         expect_correction(READER, "if x==-1 then end\n", "if x == -1 then end\n");
     }
+
+    #[test]
+    fn leaves_markup_alone() {
+        expect_no_offenses_lumen(
+            READER,
+            "return <view a=\"1\" b='x=y' c={x + 1} d>a=b<text/>1<2 {-x}</view>\n",
+        );
+        expect_no_offenses_lumen(READER, "local a = b < c and <view/>\n");
+    }
+
+    #[test]
+    fn checks_lua_inside_and_around_markup() {
+        expect_offenses_lumen(
+            READER,
+            "local a =<view b={x+1}/>\n",
+            &[
+                (1, 9, "Surrounding space missing for operator `=`."),
+                (1, 20, "Surrounding space missing for operator `+`."),
+            ],
+        );
+        expect_correction_lumen(
+            READER,
+            "return <view>{x-1}</view>\n",
+            "return <view>{x - 1}</view>\n",
+        );
+    }
 }

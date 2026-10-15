@@ -6,7 +6,9 @@ use crate::reader::{Context, Reader, Registration};
 /// Flags carriage returns: files must use LF line endings.
 ///
 /// Reported once per file, at the first carriage return; the fix drops the `\r` of every CRLF
-/// pair and turns lone carriage returns (which Lua treats as line breaks) into `\n`.
+/// pair and turns lone carriage returns (which Lua treats as line breaks) into `\n`. Carriage
+/// returns inside Lumen markup tokens (quoted attribute values and `<!-- -->` comments spanning
+/// lines) are reported but never changed.
 pub struct EndOfLine;
 
 impl Reader for EndOfLine {
@@ -19,10 +21,15 @@ impl Reader for EndOfLine {
     }
 
     fn investigate(&self, ctx: &mut Context) {
-        let text = ctx.source.text.as_str();
+        let source = ctx.source;
+        let text = source.text.as_str();
         let bytes = text.as_bytes();
+        let Some(first) = text.find('\r') else {
+            return;
+        };
         let edits: Vec<Edit> = text
             .match_indices('\r')
+            .filter(|&(index, _)| !source.in_markup(index))
             .map(|(index, _)| {
                 if bytes.get(index + 1) == Some(&b'\n') {
                     Edit::remove(index..index + 1)
@@ -31,10 +38,10 @@ impl Reader for EndOfLine {
                 }
             })
             .collect();
-        let Some(first) = edits.first().map(|edit| edit.range.clone()) else {
-            return;
-        };
-        ctx.add_offense_with_fix(first, "Carriage return character detected.", edits);
+        let offense = ctx.add_offense(first..first + 1, "Carriage return character detected.");
+        if !edits.is_empty() {
+            offense.with_fix(edits);
+        }
     }
 }
 
@@ -83,5 +90,21 @@ mod tests {
         expect_correction(READER, "s = [[x\r\ny]]\r\n", "s = [[x\ny]]\n");
         expect_correction(READER, "a()\rb()\r\n\r\n", "a()\nb()\n\n");
         expect_correction(READER, "a()\r\r\n", "a()\n\n");
+    }
+
+    #[test]
+    fn never_changes_carriage_returns_inside_markup() {
+        let src = "return <view title=\"a\r\nb\">\r\n</view>\r\n";
+        expect_offense_lumen(READER, src, 1, 22, "Carriage return character detected.");
+        expect_correction_lumen(READER, src, "return <view title=\"a\r\nb\">\n</view>\n");
+        let markup_only = "return <view title=\"a\r\nb\"/>\n";
+        expect_offense_lumen(
+            READER,
+            markup_only,
+            1,
+            22,
+            "Carriage return character detected.",
+        );
+        assert_eq!(autocorrect_lumen(READER, markup_only), markup_only);
     }
 }

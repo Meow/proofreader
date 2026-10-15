@@ -10,7 +10,8 @@ use crate::token::{Token, TokenKind};
 /// Flags a blank line directly after a line that opens a block (ending in `then`, `do`, `else`,
 /// `repeat`, `function(...)`, `{` or `(`) and directly before a line that starts with a closer
 /// (`end`, `else`, `elseif`, `until`, `}` or `)`). A blank line that is both (the whole body of
-/// an empty block) is reported once, as the beginning of the body.
+/// an empty block) is reported once, as the beginning of the body. Blank lines inside multi-line
+/// strings and comments and inside Lumen markup are not checked.
 pub struct EmptyLinesAroundBlockBody;
 
 impl Reader for EmptyLinesAroundBlockBody {
@@ -25,7 +26,7 @@ impl Reader for EmptyLinesAroundBlockBody {
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let lines = LineEnds::new(source);
-        let inside = source.lines_inside_multiline_tokens();
+        let inside = source.opaque_lines();
         for number in 2..source.line_count() {
             if !source.is_blank(number) || inside.contains(&number) {
                 continue;
@@ -239,6 +240,14 @@ mod tests {
             READER,
             "if x then\r\n\r\n  y()\r\nend\r\n",
             "if x then\r\n  y()\r\nend\r\n",
+        );
+    }
+
+    #[test]
+    fn leaves_blank_lines_inside_markup_alone() {
+        expect_no_offenses_lumen(
+            READER,
+            "return <view a={f(\n\n  x\n)}>\n\n  <text/>\n\n</view>\n",
         );
     }
 }

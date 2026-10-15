@@ -182,9 +182,9 @@ fn is_hidden(entry: &walkdir::DirEntry) -> bool {
 
 /// Expands `paths` into the sorted, de-duplicated list of files to inspect.
 ///
-/// Directories are walked recursively, skipping hidden directories, and keep the `.lua` files
-/// selected by the applicable `AllReaders` `Include`/`Exclude`. Files named explicitly are
-/// always inspected. A missing path is an error.
+/// Directories are walked recursively, skipping hidden directories, and keep the `.lua` and
+/// `.lumen` files selected by the applicable `AllReaders` `Include`/`Exclude`. Files named
+/// explicitly are always inspected. A missing path is an error.
 pub fn resolve_targets(
     paths: &[PathBuf],
     store: &mut ConfigStore,
@@ -217,7 +217,10 @@ pub fn resolve_targets(
                 message: error.to_string(),
             })?;
             if !entry.file_type().is_file()
-                || entry.path().extension().is_none_or(|ext| ext != "lua")
+                || entry
+                    .path()
+                    .extension()
+                    .is_none_or(|ext| ext != "lua" && ext != "lumen")
             {
                 continue;
             }

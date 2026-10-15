@@ -464,7 +464,7 @@ impl Config {
         let include = validator.patterns(
             all.get(&key("Include")),
             &layers.base(ALL_READERS, "Include", base_dir),
-            &["**/*.lua"],
+            &["**/*.lua", "**/*.lumen"],
             "AllReaders.Include",
         );
         let exclude = validator.patterns(
@@ -776,10 +776,11 @@ mod tests {
     }
 
     #[test]
-    fn defaults_include_lua_files_anywhere() {
+    fn defaults_include_lua_files_and_lumen_templates_anywhere() {
         let config = Config::defaults(Path::new("/project"));
         assert!(config.includes_file(Path::new("/project/lib/a.lua")));
         assert!(config.includes_file(Path::new("/elsewhere/b.lua")));
+        assert!(config.includes_file(Path::new("/project/views/lumen/card.lumen")));
         assert!(!config.includes_file(Path::new("/project/readme.md")));
         let length = config.reader("Layout/LineLength");
         assert!(length.enabled);

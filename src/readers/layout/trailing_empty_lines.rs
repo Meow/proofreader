@@ -2,8 +2,11 @@
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::token::TokenKind;
 
 /// Flags a missing final newline and blank lines at the end of the file.
+///
+/// A file ending inside a string, a comment or a markup token is left alone.
 pub struct TrailingEmptyLines;
 
 impl Reader for TrailingEmptyLines {
@@ -25,7 +28,10 @@ impl Reader for TrailingEmptyLines {
         if content_end < text.len()
             && content_end > 0
             && source.token_at(content_end).is_some_and(|token| {
-                (token.kind.is_string() || token.kind.is_comment()) && token.end == text.len()
+                (token.kind.is_string()
+                    || token.kind.is_comment()
+                    || token.kind == TokenKind::Markup)
+                    && token.end == text.len()
             })
         {
             return;
@@ -116,5 +122,11 @@ mod tests {
             1,
             "1 trailing blank line detected.",
         );
+    }
+
+    #[test]
+    fn leaves_files_ending_inside_markup_alone() {
+        expect_no_offenses_lumen(READER, "return <view><!-- open\n\n");
+        expect_correction_lumen(READER, "return <view/>\n\n\n", "return <view/>\n");
     }
 }

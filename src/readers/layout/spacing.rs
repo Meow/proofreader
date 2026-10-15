@@ -1,8 +1,12 @@
 //! Helpers shared by the token-spacing readers: the whitespace between adjacent code tokens on a
 //! line and the classification of operators as unary or binary.
+//!
+//! Markup of Lumen templates is a single operand to these helpers: markup tokens are never
+//! operators, brackets or commas, and the whitespace inside markup is part of its tokens.
 
 use std::ops::Range;
 
+use crate::lumen::opens_splice;
 use crate::source::Source;
 use crate::token::{Token, TokenKind};
 
@@ -65,21 +69,13 @@ pub fn prev_significant(source: &Source, code_index: usize) -> Option<&Token> {
         .find(|token| !token.kind.is_comment())
 }
 
-/// Whether a token of this kind can end an operand, so that a following `-` is binary.
-fn ends_operand(kind: TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Name
-            | TokenKind::Number
-            | TokenKind::String { .. }
-            | TokenKind::RParen
-            | TokenKind::RBracket
-            | TokenKind::RBrace
-            | TokenKind::True
-            | TokenKind::False
-            | TokenKind::Nil
-            | TokenKind::Dots
-    )
+/// Whether `token` can end an operand, so that a following `-` is binary. Markup ends one
+/// unless it ends with the `{` of a splice, where the Lua expression starts.
+fn ends_operand(source: &Source, token: &Token) -> bool {
+    if token.kind == TokenKind::Markup {
+        return !opens_splice(source.text_of(token));
+    }
+    token.kind.ends_operand()
 }
 
 /// Whether the code token at `code_index` is a binary operator (or `=`) whose surroundings
@@ -107,7 +103,7 @@ pub fn is_binary_operator(source: &Source, code_index: usize) -> bool {
         | TokenKind::OrOr
         | TokenKind::Concat => true,
         TokenKind::Minus => {
-            prev_significant(source, code_index).is_some_and(|prev| ends_operand(prev.kind))
+            prev_significant(source, code_index).is_some_and(|prev| ends_operand(source, prev))
         }
         _ => false,
     }

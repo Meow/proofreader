@@ -5,8 +5,8 @@ use crate::reader::{Context, Reader, Registration};
 
 /// Flags every blank line that directly follows another blank line.
 ///
-/// Lines inside multi-line strings and comments are not blank lines, and blank lines at the
-/// end of the file are left to `Layout/TrailingEmptyLines`.
+/// Lines inside multi-line strings, comments and markup tokens are not blank lines, and blank
+/// lines at the end of the file are left to `Layout/TrailingEmptyLines`.
 pub struct EmptyLines;
 
 impl Reader for EmptyLines {

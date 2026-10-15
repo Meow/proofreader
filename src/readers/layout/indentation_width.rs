@@ -302,4 +302,22 @@ mod tests {
             "if x then\n  if y then\n    z()\n  end\nend\n",
         );
     }
+
+    #[test]
+    fn does_not_judge_lines_inside_markup() {
+        expect_no_offenses_lumen(
+            READER,
+            "local function f(props)\n  return <view>\n       <text/>\n   {map(props, \
+             function(x)\n      return <b/>\n end)}\n  </view>\nend\n",
+        );
+    }
+
+    #[test]
+    fn moves_markup_with_the_body() {
+        expect_correction_lumen(
+            READER,
+            "local function f()\n    return <view>\n        <text/>\n    </view>\nend\n",
+            "local function f()\n  return <view>\n      <text/>\n  </view>\nend\n",
+        );
+    }
 }

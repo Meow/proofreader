@@ -118,4 +118,14 @@ mod tests {
             "t = {\n  a = 1, -- c\n}\n"
         );
     }
+
+    #[test]
+    fn checks_lua_tables_in_markup_but_not_splice_braces() {
+        expect_no_offenses_lumen(READER, "return <view a={x} b={{ c = 1 }}>{y,}</view>\n");
+        expect_correction_lumen(
+            READER,
+            "return <view a={{ c = 1, }}/>\n",
+            "return <view a={{ c = 1 }}/>\n",
+        );
+    }
 }

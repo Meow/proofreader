@@ -136,4 +136,12 @@ mod tests {
         assert!(!offenses[0].correctable());
         expect_correction(READER, "a = b; (f or g)()\n", "a = b; (f or g)()\n");
     }
+
+    #[test]
+    fn markup_text_is_not_code() {
+        expect_no_offenses_lumen(
+            READER,
+            "return <text style={{ a = 1 }}>a; b &amp; c</text>\n",
+        );
+    }
 }

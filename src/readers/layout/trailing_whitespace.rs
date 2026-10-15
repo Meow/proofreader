@@ -2,8 +2,10 @@
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::token::TokenKind;
 
-/// Flags spaces and tabs at the end of a line, except when they are part of a string.
+/// Flags spaces and tabs at the end of a line, except when they are part of a string or of a
+/// Lumen markup token (a quoted attribute value or a `<!-- -->` comment spanning lines).
 pub struct TrailingWhitespace;
 
 impl Reader for TrailingWhitespace {
@@ -27,7 +29,7 @@ impl Reader for TrailingWhitespace {
             let range = line_start + trimmed.len()..line_start + content.len();
             if source
                 .token_at(range.start)
-                .is_some_and(|token| token.kind.is_string())
+                .is_some_and(|token| token.kind.is_string() || token.kind == TokenKind::Markup)
             {
                 continue;
             }
@@ -121,5 +123,22 @@ mod tests {
         expect_correction(READER, "local a = 1  \n", "local a = 1\n");
         expect_correction(READER, "a \t\n  \nb \r\n", "a\n\nb\r\n");
         expect_correction(READER, "s = [[x  \n]] \n", "s = [[x  \n]]\n");
+    }
+
+    #[test]
+    fn keeps_whitespace_inside_markup_tokens() {
+        expect_no_offenses_lumen(
+            READER,
+            "return <view title=\"a  \nb\">\n  <!-- c  \n  d -->\n</view>\n",
+        );
+    }
+
+    #[test]
+    fn removes_whitespace_after_markup() {
+        expect_correction_lumen(
+            READER,
+            "return <view>  \n  text  \n</view>\n",
+            "return <view>\n  text\n</view>\n",
+        );
     }
 }

@@ -4,11 +4,12 @@ use yaml_rust2::Yaml;
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::token::TokenKind;
 
 /// Flags tabs in the leading indentation of a line; the fix replaces each tab with
 /// `IndentationWidth` spaces.
 ///
-/// Lines inside multi-line strings and whitespace-only lines (left to
+/// Lines inside multi-line strings and markup tokens and whitespace-only lines (left to
 /// `Layout/TrailingWhitespace`) are not checked.
 pub struct IndentationStyle;
 
@@ -40,7 +41,7 @@ impl Reader for IndentationStyle {
             let line_start = source.line_range(number).start;
             if source
                 .token_at(line_start)
-                .is_some_and(|token| token.kind.is_string())
+                .is_some_and(|token| token.kind.is_string() || token.kind == TokenKind::Markup)
             {
                 continue;
             }
@@ -104,5 +105,15 @@ mod tests {
             autocorrect_with(READER, "do\n\tx()\nend\n", "IndentationWidth: 4"),
             "do\n    x()\nend\n"
         );
+    }
+
+    #[test]
+    fn checks_markup_lines_but_not_markup_tokens() {
+        expect_correction_lumen(
+            READER,
+            "return <view>\n\t<text/>\n</view>\n",
+            "return <view>\n  <text/>\n</view>\n",
+        );
+        expect_no_offenses_lumen(READER, "return <view title=\"a\n\tb\"/>\n");
     }
 }

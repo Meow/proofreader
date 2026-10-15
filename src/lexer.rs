@@ -3,26 +3,44 @@
 //! Besides standard Lua 5.1 / LuaJIT syntax it understands the GLua extensions `!`, `!=`, `&&`,
 //! `||`, `continue`, `//` line comments and `/* */` block comments. Whitespace is emitted as
 //! trivia tokens, so concatenating the text of all tokens reproduces the input exactly.
+//!
+//! [`lex_lumen`] lexes Lumen templates, Lua with markup in expression position, emitting the
+//! markup as [`TokenKind::Markup`] tokens and the Lua spliced into it as ordinary tokens (see
+//! [`crate::lumen`]). Malformed markup is recorded as a [`MarkupError`] and lexing goes on.
 
+use std::ops::Range;
+
+use crate::lumen::{Markup, MarkupError, Tag, is_component_name};
 use crate::token::{Token, TokenKind};
 
 /// The UTF-8 encoding of U+FEFF, the byte order mark.
 const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// How deeply markup elements may nest in a Lumen template; a `<` that would open an element
+/// deeper than this is recorded as malformed markup and lexed as Lua or as text, so that lexing
+/// never exhausts the stack.
+const MAX_MARKUP_DEPTH: usize = 200;
 
 /// Splits `src` into tokens covering every byte, followed by an empty `Eof` token.
 ///
 /// Unterminated strings and comments end at the end of the input (short strings end at the
 /// unescaped line break instead), so lexing never fails.
 pub fn lex(src: &str) -> Vec<Token> {
-    let mut lexer = Lexer {
-        bytes: src.as_bytes(),
-        pos: 0,
-        line: 1,
-        line_start: 0,
-        tokens: Vec::with_capacity(src.len() / 3 + 1),
-    };
-    lexer.run();
+    let mut lexer = Lexer::new(src);
+    lexer.run(false);
     lexer.tokens
+}
+
+/// Splits a Lumen template into tokens like [`lex`], with markup as [`TokenKind::Markup`]
+/// tokens, and returns what was found out about its markup.
+///
+/// Markup that the Lumen compiler would reject is recorded in [`Markup::errors`]; the element
+/// it occurs in ends there and lexing resumes in the surrounding markup or Lua, so lexing never
+/// fails and every byte is still covered by exactly one token.
+pub fn lex_lumen(src: &str) -> (Vec<Token>, Markup) {
+    let mut lexer = Lexer::new(src);
+    lexer.run(true);
+    (lexer.tokens, lexer.markup)
 }
 
 /// Lexer state: the input, the current offset and the position bookkeeping.
@@ -32,6 +50,12 @@ struct Lexer<'a> {
     line: u32,
     line_start: usize,
     tokens: Vec<Token>,
+    /// What was found out about the markup of a Lumen template.
+    markup: Markup,
+    /// Start of the markup token being built, while lexing markup.
+    pending: Option<usize>,
+    /// How many markup elements are open.
+    depth: usize,
 }
 
 /// Whether `byte` can start an identifier.
@@ -44,27 +68,72 @@ fn is_name_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
 }
 
-impl Lexer<'_> {
+/// Whether `byte` can start a markup tag or attribute name.
+fn is_markup_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+/// Whether `byte` can continue a markup tag or attribute name.
+fn is_markup_name_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+}
+
+/// Whether `byte` is whitespace inside markup (Lua's `%s`).
+fn is_markup_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c)
+}
+
+/// Whether a token of this kind can end an operand, so that a `<` after it is the less-than
+/// operator rather than the start of markup.
+fn ends_operand(kind: TokenKind) -> bool {
+    kind.ends_operand() || kind == TokenKind::End
+}
+
+impl<'a> Lexer<'a> {
+    /// A lexer at the start of `src`.
+    fn new(src: &'a str) -> Self {
+        Lexer {
+            bytes: src.as_bytes(),
+            pos: 0,
+            line: 1,
+            line_start: 0,
+            tokens: Vec::with_capacity(src.len() / 3 + 1),
+            markup: Markup::default(),
+            pending: None,
+            depth: 0,
+        }
+    }
+
     /// Returns the byte `n` positions ahead of the cursor.
     fn at(&self, n: usize) -> Option<u8> {
         self.bytes.get(self.pos + n).copied()
     }
 
-    /// Lexes the whole input.
-    fn run(&mut self) {
+    /// Lexes the whole input, as a Lumen template with `lumen`.
+    fn run(&mut self, lumen: bool) {
         if self.bytes.starts_with(BOM) {
             self.pos = BOM.len();
             self.emit(TokenKind::Unknown, 0);
         }
-        while let Some(byte) = self.at(0) {
-            let start = self.pos;
-            let kind = self.scan(byte);
-            if self.pos == start {
-                self.pos += 1;
+        if lumen {
+            self.lua(false);
+        } else {
+            while let Some(byte) = self.at(0) {
+                self.token(byte);
             }
-            self.emit(kind, start);
         }
         self.emit(TokenKind::Eof, self.pos);
+    }
+
+    /// Lexes and emits the token starting with `byte` at the cursor and returns its kind.
+    fn token(&mut self, byte: u8) -> TokenKind {
+        let start = self.pos;
+        let kind = self.scan(byte);
+        if self.pos == start {
+            self.pos += 1;
+        }
+        self.emit(kind, start);
+        kind
     }
 
     /// Pushes a token spanning `start..self.pos` and advances the line bookkeeping.
@@ -319,13 +388,423 @@ impl Lexer<'_> {
     }
 }
 
+/// Lexing Lumen templates: Lua mode with markup in expression position, and markup mode.
+impl Lexer<'_> {
+    /// Whether the bytes at the cursor start with `prefix`.
+    fn looking_at(&self, prefix: &[u8]) -> bool {
+        self.bytes[self.pos..].starts_with(prefix)
+    }
+
+    /// Lexes Lua code, turning every `<` that starts markup into an element. With `splice`, stops
+    /// at the first `}` not matched by a `{` of its own, which is left for the markup around the
+    /// splice. Returns how many tokens other than trivia and comments it lexed, an element
+    /// counting as one.
+    ///
+    /// A name ending in a non-ASCII byte does not end an operand here, as the compiler only takes
+    /// ASCII letters, digits and `_` as name characters.
+    fn lua(&mut self, splice: bool) -> usize {
+        let mut braces = 0usize;
+        let mut operand = false;
+        let mut count = 0;
+        while let Some(byte) = self.at(0) {
+            if byte == b'}' && splice && braces == 0 {
+                break;
+            }
+            if byte == b'<' && !operand && self.before_tag() {
+                if self.depth < MAX_MARKUP_DEPTH {
+                    let start = self.pos;
+                    self.element();
+                    self.flush_markup();
+                    if self.depth == 0 {
+                        self.markup.elements.push(start..self.pos);
+                    }
+                    operand = true;
+                    count += 1;
+                    continue;
+                }
+                self.too_deep();
+            }
+            let kind = self.token(byte);
+            match kind {
+                TokenKind::LBrace => braces += 1,
+                TokenKind::RBrace => braces = braces.saturating_sub(1),
+                _ => {}
+            }
+            if !kind.is_trivia() && !kind.is_comment() {
+                operand = ends_operand(kind) && self.bytes[self.pos - 1].is_ascii();
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Whether a name or `>` follows the `<` under the cursor, so that it may open an element.
+    fn before_tag(&self) -> bool {
+        self.at(1)
+            .is_some_and(|next| next == b'>' || is_markup_name_start(next))
+    }
+
+    /// Records the `<` under the cursor, which would open an element deeper than
+    /// [`MAX_MARKUP_DEPTH`], as malformed markup.
+    fn too_deep(&mut self) {
+        let here = self.pos;
+        self.markup_error(here..here + 1, "markup nested too deeply".to_owned());
+    }
+
+    /// Starts a markup token at the cursor unless one is being built.
+    fn mark(&mut self) {
+        if self.pending.is_none() {
+            self.pending = Some(self.pos);
+        }
+    }
+
+    /// Emits the markup token being built, if it covers any bytes; whitespace at its end, which
+    /// only malformed or unfinished markup leaves there, becomes trivia.
+    fn flush_markup(&mut self) {
+        let Some(start) = self.pending.take() else {
+            return;
+        };
+        let end = self.pos;
+        let content = start
+            + self.bytes[start..end]
+                .iter()
+                .rposition(|&byte| !is_markup_space(byte))
+                .map_or(0, |last| last + 1);
+        if content > start {
+            self.pos = content;
+            self.emit(TokenKind::Markup, start);
+        }
+        self.trivia_until(end);
+    }
+
+    /// Lexes the whitespace from the cursor up to byte `end` as trivia tokens.
+    fn trivia_until(&mut self, end: usize) {
+        while self.pos < end {
+            self.token(self.bytes[self.pos]);
+        }
+    }
+
+    /// Records malformed markup at `range`.
+    fn markup_error(&mut self, range: Range<usize>, message: String) {
+        self.markup.errors.push(MarkupError { range, message });
+    }
+
+    /// The range of the character at byte offset `at`, empty at the end of the input.
+    fn char_at(&self, at: usize) -> Range<usize> {
+        let width = match self.bytes.get(at) {
+            None => 0,
+            Some(&byte) if byte < 0xC0 => 1,
+            Some(&byte) if byte < 0xE0 => 2,
+            Some(&byte) if byte < 0xF0 => 3,
+            Some(_) => 4,
+        };
+        at..(at + width).min(self.bytes.len())
+    }
+
+    /// The text of `range`, which lies on character boundaries of the input.
+    fn text(&self, range: Range<usize>) -> String {
+        String::from_utf8_lossy(&self.bytes[range]).into_owned()
+    }
+
+    /// Consumes whitespace inside markup. Whitespace within a line stays in the markup token;
+    /// a run with a line break ends the markup token before it and becomes trivia tokens.
+    fn markup_space(&mut self) {
+        let start = self.pos;
+        let mut end = start;
+        let mut newline = false;
+        while let Some(&byte) = self.bytes.get(end) {
+            if !is_markup_space(byte) {
+                break;
+            }
+            newline |= byte == b'\n';
+            end += 1;
+        }
+        if newline {
+            self.flush_markup();
+            self.trivia_until(end);
+        } else {
+            self.mark();
+            self.pos = end;
+        }
+        if self.pos < self.bytes.len() {
+            self.mark();
+        }
+    }
+
+    /// Consumes a tag or attribute name at the cursor and returns its range.
+    fn markup_name(&mut self) -> Range<usize> {
+        let start = self.pos;
+        if self.at(0).is_some_and(is_markup_name_start) {
+            self.skip_while(is_markup_name_continue);
+        }
+        start..self.pos
+    }
+
+    /// Lexes the Lua of a splice whose `{` or `{...` was just consumed, then its closing `}`.
+    /// Returns how many tokens the expression has, or `None` when the input ends first.
+    fn splice(&mut self) -> Option<usize> {
+        self.flush_markup();
+        let count = self.lua(true);
+        self.at(0)?;
+        self.markup.splice_ends.push(self.pos);
+        self.mark();
+        self.pos += 1;
+        Some(count)
+    }
+
+    /// Lexes one element starting at the `<` under the cursor, leaving the cursor after it.
+    fn element(&mut self) {
+        let start = self.pos;
+        self.depth += 1;
+        self.mark();
+        self.pos += 1;
+        if self.at(0) == Some(b'>') {
+            self.pos += 1;
+            self.children(start, None);
+        } else {
+            let name = self.markup_name();
+            let text = self.text(name.clone());
+            if is_component_name(&text) && text.contains('-') {
+                self.markup_error(
+                    start..name.end,
+                    format!(
+                        "the name of the '{text}' component must be a Lua expression and can not \
+                         have '-' in it"
+                    ),
+                );
+            }
+            self.markup.tags.push(Tag {
+                name: name.clone(),
+                closing: false,
+            });
+            if self.attributes(start, &name) == Some(false) {
+                self.children(start, Some(name));
+            }
+        }
+        self.depth -= 1;
+    }
+
+    /// Lexes the attributes of the tag `name` opened at `start`, up to and including the `>` or
+    /// `/>` ending the tag. Returns whether the tag is self-closing, or `None` when the markup is
+    /// malformed.
+    fn attributes(&mut self, start: usize, name: &Range<usize>) -> Option<bool> {
+        let tag = self.text(name.clone());
+        loop {
+            self.markup_space();
+            let here = self.pos;
+            match self.at(0) {
+                None => {
+                    self.markup_error(start..name.end, format!("unfinished tag '<{tag}'"));
+                    return None;
+                }
+                Some(b'/') if self.at(1) == Some(b'>') => {
+                    self.pos += 2;
+                    return Some(true);
+                }
+                Some(b'/') => {
+                    self.markup_error(here..here + 1, "'>' expected after '/'".to_owned());
+                    return None;
+                }
+                Some(b'>') => {
+                    self.pos += 1;
+                    return Some(false);
+                }
+                Some(b'{') if self.looking_at(b"{...") => {
+                    self.pos += 4;
+                    match self.splice() {
+                        None => {
+                            self.unfinished_expression(here);
+                            return None;
+                        }
+                        Some(0) => self.markup_error(
+                            here..here + 4,
+                            "spread expression expected after ...".to_owned(),
+                        ),
+                        Some(_) => {}
+                    }
+                }
+                Some(byte) if is_markup_name_start(byte) => {
+                    let attribute = self.markup_name();
+                    self.attribute_value(&self.text(attribute))?;
+                }
+                Some(_) => {
+                    self.markup_error(
+                        self.char_at(here),
+                        format!("attribute name expected in '<{tag}'"),
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Lexes the `= value` after the attribute `name`, if there is one. Returns `None` when the
+    /// value is malformed.
+    fn attribute_value(&mut self, name: &str) -> Option<()> {
+        self.markup_space();
+        if self.at(0) != Some(b'=') {
+            return Some(());
+        }
+        self.pos += 1;
+        self.markup_space();
+        let here = self.pos;
+        match self.at(0) {
+            Some(quote @ (b'"' | b'\'')) => {
+                let Some(length) = self.bytes[here + 1..].iter().position(|&b| b == quote) else {
+                    self.markup_error(
+                        here..here + 1,
+                        format!("unfinished value of the '{name}' attribute"),
+                    );
+                    return None;
+                };
+                self.pos = here + length + 2;
+            }
+            Some(b'{') => {
+                self.pos += 1;
+                match self.splice() {
+                    None => {
+                        self.unfinished_expression(here);
+                        return None;
+                    }
+                    Some(0) => self.markup_error(
+                        here..here + 1,
+                        format!("the '{name}' attribute has an empty expression"),
+                    ),
+                    Some(_) => {}
+                }
+            }
+            _ => {
+                self.markup_error(
+                    self.char_at(here),
+                    format!("the value of the '{name}' attribute must be quoted or in {{ }}"),
+                );
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    /// Records a splice opened at `start` that the end of the input cuts short.
+    fn unfinished_expression(&mut self, start: usize) {
+        self.markup_error(
+            start..start + 1,
+            "unfinished expression: '}' expected".to_owned(),
+        );
+    }
+
+    /// Lexes the children of the element opened at `start` (the tag `name`, or a fragment), up
+    /// to and including its closing tag.
+    fn children(&mut self, start: usize, name: Option<Range<usize>>) {
+        let tag = name.clone().map(|name| self.text(name));
+        loop {
+            let here = self.pos;
+            match self.at(0) {
+                None => {
+                    let message = match &tag {
+                        Some(tag) => format!("'<{tag}>' is never closed"),
+                        None => "the fragment is never closed".to_owned(),
+                    };
+                    let end = name.as_ref().map_or(start + 2, |name| name.end);
+                    self.markup_error(start..end, message);
+                    return;
+                }
+                Some(b'<') if self.looking_at(b"<!--") => {
+                    match self.bytes[here + 4..]
+                        .windows(3)
+                        .position(|window| window == b"-->")
+                    {
+                        Some(offset) => self.pos = here + 4 + offset + 3,
+                        None => {
+                            self.markup_error(here..here + 4, "unfinished comment".to_owned());
+                            self.pos = self.bytes.len();
+                            if let Some(comment) = self.pending.take() {
+                                self.emit(TokenKind::Markup, comment);
+                            }
+                            return;
+                        }
+                    }
+                }
+                Some(b'<') if self.at(1) == Some(b'/') => {
+                    self.pos += 2;
+                    self.closing_tag(tag.as_deref());
+                    return;
+                }
+                Some(b'<') => {
+                    if !self.before_tag() {
+                        self.markup_error(here..here + 1, "tag name expected".to_owned());
+                        self.pos += 1;
+                    } else if self.depth < MAX_MARKUP_DEPTH {
+                        self.element();
+                    } else {
+                        self.too_deep();
+                        self.pos += 1;
+                    }
+                }
+                Some(b'{') => {
+                    self.pos += 1;
+                    if self.splice().is_none() {
+                        self.unfinished_expression(here);
+                        return;
+                    }
+                }
+                Some(_) => {
+                    while let Some(byte) = self.at(0) {
+                        match byte {
+                            b'<' | b'{' => break,
+                            byte if is_markup_space(byte) => self.markup_space(),
+                            _ => self.pos += 1,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lexes a closing tag after its `</`, which must close `tag` (`None` for a fragment).
+    fn closing_tag(&mut self, tag: Option<&str>) {
+        self.markup_space();
+        if let Some(tag) = tag {
+            let name = self.markup_name();
+            let found = self.text(name.clone());
+            if found != tag {
+                let range = if found.is_empty() {
+                    self.char_at(name.start)
+                } else {
+                    name
+                };
+                let got = self.text(range.clone());
+                self.markup_error(range, format!("'</{tag}>' expected, got '</{got}'"));
+                return;
+            }
+            self.markup.tags.push(Tag {
+                name,
+                closing: true,
+            });
+            self.markup_space();
+        }
+        if self.at(0) == Some(b'>') {
+            self.pos += 1;
+        } else {
+            let what = tag.unwrap_or("the fragment");
+            self.markup_error(
+                self.char_at(self.pos),
+                format!("'>' expected in the closing tag of '{what}'"),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use TokenKind::Markup;
     use TokenKind::*;
 
     fn check_invariants(src: &str) -> Vec<Token> {
-        let tokens = lex(src);
+        check_tokens(src, lex(src))
+    }
+
+    fn check_tokens(src: &str, tokens: Vec<Token>) -> Vec<Token> {
         let last = tokens.last().expect("at least the Eof token");
         assert_eq!(last.kind, Eof);
         assert_eq!((last.start, last.end), (src.len(), src.len()));
@@ -876,11 +1355,456 @@ end
         );
     }
 
+    fn check_lumen(src: &str) -> (Vec<Token>, crate::lumen::Markup) {
+        let (tokens, markup) = lex_lumen(src);
+        let tokens = check_tokens(src, tokens);
+        for token in tokens.iter().filter(|token| token.kind == Markup) {
+            let text = token.text(src);
+            assert!(
+                !text.starts_with(char::is_whitespace)
+                    && (token.end == src.len() || !text.ends_with(char::is_whitespace)),
+                "markup token {text:?} has whitespace at an edge in {src:?}"
+            );
+        }
+        for error in &markup.errors {
+            assert!(
+                error.range.start <= error.range.end
+                    && src.is_char_boundary(error.range.start)
+                    && src.is_char_boundary(error.range.end),
+                "error range {:?} in {src:?}",
+                error.range
+            );
+        }
+        (tokens, markup)
+    }
+
+    fn lumen(src: &str) -> Vec<(TokenKind, &str)> {
+        let (tokens, markup) = check_lumen(src);
+        assert!(
+            markup.errors.is_empty(),
+            "unexpected markup errors in {src:?}: {:?}",
+            markup.errors
+        );
+        tokens
+            .into_iter()
+            .filter(|token| !token.is_trivia() && token.kind != Eof)
+            .map(|token| (token.kind, token.text(src)))
+            .collect()
+    }
+
+    fn lumen_errors(src: &str) -> Vec<(std::string::String, &str)> {
+        check_lumen(src)
+            .1
+            .errors
+            .into_iter()
+            .map(|error| (error.message, &src[error.range]))
+            .collect()
+    }
+
+    #[test]
+    fn lumen_comparisons_stay_lua() {
+        assert_eq!(lumen("a < b"), vec![(Name, "a"), (Lt, "<"), (Name, "b")]);
+        assert_eq!(lumen("x<y"), vec![(Name, "x"), (Lt, "<"), (Name, "y")]);
+        assert_eq!(
+            lumen("#list < 3"),
+            vec![(Hash, "#"), (Name, "list"), (Lt, "<"), (Number, "3")]
+        );
+        assert_eq!(lumen("a <= b"), vec![(Name, "a"), (Le, "<="), (Name, "b")]);
+        for src in [
+            "f() <a", "t[1] <a", "{} <a", "1 <a", "'s' <a", "... <a", "nil <a", "true <a",
+            "false <a", "end <a",
+        ] {
+            assert!(
+                lumen(src).iter().all(|(kind, _)| *kind != Markup),
+                "{src} has markup"
+            );
+            assert!(lumen(src).iter().any(|(kind, _)| *kind == Lt), "{src}");
+        }
+    }
+
+    #[test]
+    fn lumen_markup_in_expression_position() {
+        assert_eq!(
+            lumen("return <view/>"),
+            vec![(Return, "return"), (Markup, "<view/>")]
+        );
+        assert_eq!(
+            lumen("f(<a/>)"),
+            vec![(Name, "f"), (LParen, "("), (Markup, "<a/>"), (RParen, ")")]
+        );
+        assert_eq!(
+            lumen("{ <a/> }"),
+            vec![(LBrace, "{"), (Markup, "<a/>"), (RBrace, "}")]
+        );
+        assert_eq!(
+            lumen("x = cond and <a />"),
+            vec![
+                (Name, "x"),
+                (Assign, "="),
+                (Name, "cond"),
+                (And, "and"),
+                (Markup, "<a />")
+            ]
+        );
+        assert_eq!(lumen("!<a/>"), vec![(Bang, "!"), (Markup, "<a/>")]);
+        assert_eq!(lumen("<a/>"), vec![(Markup, "<a/>")]);
+        assert_eq!(
+            lumen("x = <a/> < 1"),
+            vec![
+                (Name, "x"),
+                (Assign, "="),
+                (Markup, "<a/>"),
+                (Lt, "<"),
+                (Number, "1")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_strings_and_comments_hide_markup() {
+        assert_eq!(
+            lumen("x = '<a/>' -- <b>"),
+            vec![
+                (Name, "x"),
+                (Assign, "="),
+                (String { long: false }, "'<a/>'"),
+                (Comment { long: false }, "-- <b>")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_attribute_values() {
+        assert_eq!(
+            lumen(r#"return <a title="x > y" alt='it"s' b c="it's" d/>"#),
+            vec![
+                (Return, "return"),
+                (Markup, r#"<a title="x > y" alt='it"s' b c="it's" d/>"#)
+            ]
+        );
+        assert_eq!(
+            lumen("return <a b={x} c={{ d = 1 }}/>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<a b={"),
+                (Name, "x"),
+                (Markup, "} c={"),
+                (LBrace, "{"),
+                (Name, "d"),
+                (Assign, "="),
+                (Number, "1"),
+                (RBrace, "}"),
+                (Markup, "}/>")
+            ]
+        );
+        assert_eq!(
+            lumen("return <a {...props} b/>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<a {..."),
+                (Name, "props"),
+                (Markup, "} b/>")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_text_is_markup() {
+        assert_eq!(
+            lumen("return <text>the end -- \"q\" 'q' } (x) then</text>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<text>the end -- \"q\" 'q' } (x) then</text>")
+            ]
+        );
+        assert_eq!(
+            lumen("return <text>Hi, {name}!</text>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<text>Hi, {"),
+                (Name, "name"),
+                (Markup, "}!</text>")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_fragments_comments_and_self_closing_tags() {
+        assert_eq!(
+            lumen("return <><a/><b /><!-- c { < --></>"),
+            vec![(Return, "return"), (Markup, "<><a/><b /><!-- c { < --></>")]
+        );
+        assert_eq!(
+            lumen("return <>\n  <!-- a\n  b -->\n</>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<>"),
+                (Markup, "<!-- a\n  b -->"),
+                (Markup, "</>")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_nested_markup_in_splices() {
+        assert_eq!(
+            lumen("return <view>{map(list, function(item) return <row key={item}/> end)}</view>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<view>{"),
+                (Name, "map"),
+                (LParen, "("),
+                (Name, "list"),
+                (Comma, ","),
+                (Function, "function"),
+                (LParen, "("),
+                (Name, "item"),
+                (RParen, ")"),
+                (Return, "return"),
+                (Markup, "<row key={"),
+                (Name, "item"),
+                (Markup, "}/>"),
+                (End, "end"),
+                (RParen, ")"),
+                (Markup, "}</view>")
+            ]
+        );
+        assert_eq!(
+            lumen("return <a>{x and <b>{y < 2 and <c/>}</b>}</a>"),
+            vec![
+                (Return, "return"),
+                (Markup, "<a>{"),
+                (Name, "x"),
+                (And, "and"),
+                (Markup, "<b>{"),
+                (Name, "y"),
+                (Lt, "<"),
+                (Number, "2"),
+                (And, "and"),
+                (Markup, "<c/>"),
+                (Markup, "}</b>"),
+                (Markup, "}</a>")
+            ]
+        );
+    }
+
+    #[test]
+    fn lumen_multiline_markup_splits_at_line_breaks() {
+        let src = "return <button key={id}\n  style={x} >\n  {label}  \n  Some text\n</button>\n";
+        let (tokens, markup) = check_lumen(src);
+        assert!(markup.errors.is_empty());
+        let all: Vec<(TokenKind, &str)> = tokens
+            .iter()
+            .filter(|token| token.kind != Eof)
+            .map(|token| (token.kind, token.text(src)))
+            .collect();
+        assert_eq!(
+            all,
+            vec![
+                (Return, "return"),
+                (Space, " "),
+                (Markup, "<button key={"),
+                (Name, "id"),
+                (Markup, "}"),
+                (Newline, "\n"),
+                (Space, "  "),
+                (Markup, "style={"),
+                (Name, "x"),
+                (Markup, "} >"),
+                (Newline, "\n"),
+                (Space, "  "),
+                (Markup, "{"),
+                (Name, "label"),
+                (Markup, "}"),
+                (Space, "  "),
+                (Newline, "\n"),
+                (Space, "  "),
+                (Markup, "Some text"),
+                (Newline, "\n"),
+                (Markup, "</button>"),
+                (Newline, "\n")
+            ]
+        );
+        assert_eq!(markup.elements, vec![7..src.len() - 1]);
+        let value = "return <a title=\"x\n  y\" />";
+        let (tokens, _) = check_lumen(value);
+        let markup_token = tokens
+            .iter()
+            .find(|token| token.kind == Markup)
+            .expect("markup");
+        assert_eq!(markup_token.text(value), "<a title=\"x\n  y\" />");
+        assert_eq!((markup_token.line, markup_token.end_line), (1, 2));
+    }
+
+    #[test]
+    fn lumen_records_tags_and_elements() {
+        let src = "local a = <Card x={<b/>}>t</Card>\nreturn <Flux.Panels.Card/>";
+        let (_, markup) = check_lumen(src);
+        let tags: Vec<(&str, bool)> = markup
+            .tags
+            .iter()
+            .map(|tag| (&src[tag.name.clone()], tag.closing))
+            .collect();
+        assert_eq!(
+            tags,
+            vec![
+                ("Card", false),
+                ("b", false),
+                ("Card", true),
+                ("Flux.Panels.Card", false)
+            ]
+        );
+        let elements: Vec<&str> = markup
+            .elements
+            .iter()
+            .map(|range| &src[range.clone()])
+            .collect();
+        assert_eq!(
+            elements,
+            vec!["<Card x={<b/>}>t</Card>", "<Flux.Panels.Card/>"]
+        );
+    }
+
+    #[test]
+    fn lumen_records_splice_ends() {
+        let src = "return <a b={x}>{}\n  } text\n  {<c/>}</a>";
+        let (_, markup) = check_lumen(src);
+        let ends = [
+            src.find("x}").expect("attribute") + 1,
+            src.find("{}").expect("empty splice") + 1,
+            src.find("/>}").expect("child") + 2,
+        ];
+        assert_eq!(markup.splice_ends, ends);
+    }
+
+    #[test]
+    fn lumen_reports_malformed_markup_like_the_compiler() {
+        assert_eq!(
+            lumen_errors("return <view>\n  <text>x</text>\n"),
+            vec![("'<view>' is never closed".to_owned(), "<view")]
+        );
+        assert_eq!(
+            lumen_errors("return <view><b></text></view>")[0],
+            ("'</b>' expected, got '</text'".to_owned(), "text")
+        );
+        assert_eq!(
+            lumen_errors("return <>x"),
+            vec![("the fragment is never closed".to_owned(), "<>")]
+        );
+        assert_eq!(
+            lumen_errors("return <a b=c/>")[0],
+            (
+                "the value of the 'b' attribute must be quoted or in { }".to_owned(),
+                "c"
+            )
+        );
+        assert_eq!(
+            lumen_errors("return <a b='c/>")[0],
+            ("unfinished value of the 'b' attribute".to_owned(), "'")
+        );
+        assert_eq!(
+            lumen_errors("return <a b={}/>"),
+            vec![("the 'b' attribute has an empty expression".to_owned(), "{")]
+        );
+        assert_eq!(
+            lumen_errors("return <a {...}/>"),
+            vec![("spread expression expected after ...".to_owned(), "{...")]
+        );
+        assert_eq!(
+            lumen_errors("return <a / >")[0],
+            ("'>' expected after '/'".to_owned(), "/")
+        );
+        assert_eq!(
+            lumen_errors("return <a 1/>")[0],
+            ("attribute name expected in '<a'".to_owned(), "1")
+        );
+        assert_eq!(
+            lumen_errors("return <a b={x")[0],
+            ("unfinished expression: '}' expected".to_owned(), "{")
+        );
+        assert_eq!(
+            lumen_errors("return <a><!-- x</a>")[0],
+            ("unfinished comment".to_owned(), "<!--")
+        );
+        assert_eq!(
+            lumen_errors("return <a>1 < 2</a>")[0],
+            ("tag name expected".to_owned(), "<")
+        );
+        assert_eq!(
+            lumen_errors("return <a></a x>")[0],
+            ("'>' expected in the closing tag of 'a'".to_owned(), "x")
+        );
+        assert_eq!(
+            lumen_errors("x = \u{e9} <a"),
+            vec![("unfinished tag '<a'".to_owned(), "<a")]
+        );
+        assert!(lumen_errors("x = a\u{e9}b <a").is_empty());
+        assert_eq!(
+            lumen_errors("return <a\n"),
+            vec![("unfinished tag '<a'".to_owned(), "<a")]
+        );
+        assert_eq!(
+            lumen_errors("return <My-card/>"),
+            vec![(
+                "the name of the 'My-card' component must be a Lua expression and can not have \
+                 '-' in it"
+                    .to_owned(),
+                "<My-card"
+            )]
+        );
+        assert!(lumen_errors("return <my-card/>").is_empty());
+        assert_eq!(
+            lumen_errors("return <a é/>")[0],
+            ("attribute name expected in '<a'".to_owned(), "é")
+        );
+        assert_eq!(
+            lumen_errors("return <a></é>")[0],
+            ("'</a>' expected, got '</é'".to_owned(), "é")
+        );
+    }
+
+    #[test]
+    fn lumen_lexing_never_fails() {
+        let alphabet = [
+            "", "<", ">", "/", "{", "}", "a", "A", "=", "'", "\"", "!", "-", "\n", " ", ".", "...",
+            "<!--", "-->", "</", "\t", "é", "[[", "--",
+        ];
+        for a in alphabet {
+            for b in alphabet {
+                for c in alphabet {
+                    for d in ["", "<", ">", "{", "}", "a", "\n", "'"] {
+                        check_lumen(&format!("x = {a}{b}{c}{d}"));
+                        check_lumen(&format!("{a}{b}{c}{d}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lumen_deep_nesting_does_not_exhaust_the_stack() {
+        let src = format!("return {}", "<a>{".repeat(5000));
+        let (_, markup) = check_lumen(&src);
+        assert_eq!(markup.errors[0].message, "markup nested too deeply");
+        let src = format!("return {}", "<a>".repeat(5000));
+        check_lumen(&src);
+    }
+
+    #[test]
+    fn lua_files_never_produce_markup() {
+        assert!(
+            check_invariants("return <view/>")
+                .iter()
+                .all(|token| token.kind != Markup)
+        );
+    }
+
     #[test]
     #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
     fn lexes_the_flux_corpus() {
         let root = std::path::Path::new("/home/luna/code/flux-ce");
         let mut count = 0;
+        let mut lumen_files = 0;
         for entry in walkdir::WalkDir::new(root)
             .into_iter()
             .filter_map(Result::ok)
@@ -900,7 +1824,20 @@ end
                 );
                 count += 1;
             }
+            if path.extension().is_some_and(|ext| ext == "lumen") {
+                let text = std::fs::read_to_string(path).expect("UTF-8 source");
+                let (tokens, markup) = check_lumen(&text);
+                assert!(
+                    markup.errors.is_empty(),
+                    "{}: {:?}",
+                    path.display(),
+                    markup.errors
+                );
+                assert!(tokens.iter().any(|token| token.kind == Markup));
+                lumen_files += 1;
+            }
         }
         assert!(count >= 356, "only {count} files found");
+        assert!(lumen_files >= 5, "only {lumen_files} Lumen templates found");
     }
 }

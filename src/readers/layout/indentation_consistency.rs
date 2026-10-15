@@ -315,4 +315,17 @@ mod tests {
             "function f()\n  x()\n  local y = a and\n    b\n  z()\nend\n",
         );
     }
+
+    #[test]
+    fn checks_statements_around_markup() {
+        expect_no_offenses_lumen(
+            READER,
+            "local function f()\n  local a = <view>\n      <text/>\n    </view>\n  return a\nend\n",
+        );
+        expect_correction_lumen(
+            READER,
+            "local function f()\n  local x = 1\n   return <view>\n     <text/>\n   </view>\nend\n",
+            "local function f()\n  local x = 1\n  return <view>\n    <text/>\n  </view>\nend\n",
+        );
+    }
 }

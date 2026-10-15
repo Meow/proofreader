@@ -1,7 +1,9 @@
 //! A minimal tracker of brackets and block keywords, shared by the lint readers.
 //!
 //! It does not parse expressions; it only pairs `(`/`)`, `[`/`]`, `{`/`}`, block openers with
-//! `end`, and `repeat` with `until`. `for`/`while` and their `do` share one `end`.
+//! `end`, and `repeat` with `until`. `for`/`while` and their `do` share one `end`. Markup tokens
+//! of Lumen templates open and close nothing: the braces around Lua spliced into markup belong
+//! to them.
 
 use crate::token::{Token, TokenKind};
 

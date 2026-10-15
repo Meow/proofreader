@@ -9,6 +9,10 @@ use crate::token::TokenKind;
 /// Reports what the lexer and a bracket/block counter can tell about broken syntax:
 /// unterminated strings and block comments, characters that are not GLua, and the first
 /// unbalanced bracket, `end` or `until`.
+///
+/// In Lumen templates markup is an operand and its braces are not brackets. The first piece of
+/// malformed markup is reported in the words of the Lumen compiler (`'<view>' is never closed.`,
+/// `'</view>' expected, got '</text'.`); later ones are not, as they may follow from it.
 pub struct Syntax;
 
 impl Reader for Syntax {
@@ -26,6 +30,9 @@ impl Reader for Syntax {
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
+        if let Some(error) = source.markup().errors.first() {
+            ctx.add_offense(error.range.clone(), format!("{}.", error.message));
+        }
         let mut nesting = Nesting::default();
         let mut balanced = true;
         let mut last = None;
@@ -242,5 +249,52 @@ mod tests {
     fn never_autocorrects() {
         let src = "x = 'a\n";
         assert_eq!(autocorrect(READER, src), src);
+    }
+
+    #[test]
+    fn treats_markup_as_an_operand() {
+        expect_no_offenses_lumen(
+            READER,
+            "local function Row(props)\n  return <view key={props.id} style={{ gap = 4 }}>\n    \
+             {map(props.items, function(item) return <text>{item}</text> end)}\n    \
+             <!-- ) end } -->\n    text with end ) } ] and 'quotes\n  </view>\nend\n\n\
+             return <><Row id={1} {...props}/></>\n",
+        );
+    }
+
+    #[test]
+    fn reports_malformed_markup_like_the_compiler() {
+        expect_offense_lumen(
+            READER,
+            "return <view>\n  <text/>\n",
+            1,
+            8,
+            "'<view>' is never closed.",
+        );
+        expect_offense_lumen(
+            READER,
+            "return <view>\n  <text>x</view>\n</view>\n",
+            2,
+            12,
+            "'</text>' expected, got '</view'.",
+        );
+        expect_offense_lumen(
+            READER,
+            "return <view a=b/>\n",
+            1,
+            16,
+            "the value of the 'a' attribute must be quoted or in { }.",
+        );
+    }
+
+    #[test]
+    fn checks_lua_spliced_into_markup() {
+        expect_offense_lumen(
+            READER,
+            "return <view a={f(x]}/>\n",
+            1,
+            20,
+            "Unexpected `]`; expected `)` for `(` on line 1.",
+        );
     }
 }

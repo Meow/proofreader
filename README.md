@@ -4,6 +4,9 @@ A RuboCop-like linter and autocorrector for **GLua** (Garry's Mod Lua), encoding
 framework. It understands the GLua extensions (`!`, `!=`, `&&`, `||`,
 `continue`, `//` and `/* */` comments) and inspects hundreds of files in a few milliseconds.
 
+Besides GLua files (`.lua`) it inspects Flux's Lumen templates (`.lumen`), GLua with JSX-like markup in
+expression position; see [Lumen templates](#lumen-templates).
+
 ## Usage
 
 ```
@@ -21,8 +24,9 @@ proofreader [PATHS]... [OPTIONS]            PATHS default to "."
   -v, --version / -h, --help
 ```
 
-Directories are walked recursively (hidden directories are skipped) and filtered by `AllReaders`
-`Include`/`Exclude`. Files given explicitly are always inspected, even when excluded or not ending in `.lua`.
+Directories are walked recursively (hidden directories are skipped) for `.lua` and `.lumen` files, filtered by
+`AllReaders` `Include`/`Exclude`. Files given explicitly are always inspected, even when excluded or not
+ending in `.lua` or `.lumen`; a file ending in `.lumen` is read as a Lumen template, any other as GLua.
 
 Reader names in `--only`, `--except` and `--show-readers` are case-insensitive and may be a full name
 (`Layout/LineLength`), a department (`Layout`) or a bare name (`LineLength`). A reader named explicitly in
@@ -76,8 +80,9 @@ Each file is checked with the nearest `.proofreader.yml` found in its directory 
 inherit_from: ../.proofreader.yml        # a string or a list, relative to this file
 
 AllReaders:
-  Include:                                # default: ['**/*.lua']
+  Include:                                # default: ['**/*.lua', '**/*.lumen']
     - '**/*.lua'
+    - '**/*.lumen'
   Exclude:
     - 'packages/pon/**/*'
   Severity: convention                    # default severity of readers without their own
@@ -133,7 +138,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (38 in total);
+`proofreader --show-readers` lists every reader with its description (39 in total);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -188,7 +193,8 @@ configuration of the matching readers as YAML, which is a good starting point fo
 |--------|--------|----------|-----|--------------------|
 | `Lint/DuplicateTableKey` | The same literal key twice in one table constructor (`a = 1, a = 2`, `['a']`, `[1]`/`[1.0]`). | warning | no | |
 | `Lint/ShadowedLibrary` | Locals, parameters and loop variables named after a GMod library (`local file = ...`); `local render = render` is allowed. | warning | no | `Libraries: [player, team, file, table, sound, string, math, util, net, hook, timer, render, surface, draw, ents, game, engine, input, gui, vgui, http, os, debug, bit]` |
-| `Lint/Syntax` | Unterminated strings and block comments, stray characters, and the first unbalanced bracket, `end` or `until`. | fatal | no | |
+| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. | fatal | no | |
+| `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix prefixes the name with `_` at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | |
 
 ### Naming
 
@@ -204,6 +210,52 @@ assignments into one column, while `Layout/SpaceAroundOperators` with `AllowForA
 removes every extra space before an `=`. Enabling both makes the two readers undo each other on
 every autocorrect pass (until the pass limit is reached); keep `AllowForAlignment: true` when
 forcing alignment.
+
+## Lumen templates
+
+A `.lumen` file is GLua in which markup may appear wherever an expression may, as compiled by Flux's
+`Lumen.Compiler`:
+
+```lua
+local Row = Lumen.require('row')
+
+return function(props)
+  return <view style={{ gap = 4 }}>
+    <text color="accent">Hello, {props.name}!</text>
+    {Lumen.map(props.items, function(item)
+      return <Row key={item.id} item={item} />
+    end)}
+  </view>
+end
+```
+
+A `<` starts markup when it is followed by a letter, `_` or `>` and the token before it cannot end an operand
+(`a < b` and `#list < 3` stay comparisons). Tags, attributes and their quoted values, text children and
+`<!-- -->` comments are lexed as markup tokens; the Lua inside `{ }` splices is lexed as Lua and checked like
+any other Lua, markup nested in it included. Autocorrection never changes a byte of markup, only the Lua
+around and inside it and the whitespace between markup lines (indentation, trailing whitespace, blank lines).
+
+How the readers treat markup:
+
+- Markup is an operand to every reader. Operators, quotes, `=` and braces inside markup are not Lua tokens, so
+  the spacing readers, `Style/StringLiterals`, `Style/TrailingCommaInTable`, `Style/Semicolon` and
+  `Lint/DuplicateTableKey` only see the Lua in it. `Layout/ExtraSpacing` leaves the whitespace just inside the
+  braces of a splice (`{ name }`) alone.
+- Lines that start inside a markup element (all its lines but the first) are skipped by the indentation
+  readers (`Layout/IndentationWidth`, `Layout/IndentationConsistency`), the blank-line readers
+  (`Layout/EmptyLineAfterBlock`, `Layout/EmptyLineAfterGuardClause`, `Layout/EmptyLineBeforeBlock`,
+  `Layout/EmptyLineBetweenDefs`, `Layout/EmptyLinesAroundBlockBody`) and equal-sign alignment, including the
+  Lua spliced into them. The Lua lines around markup are checked as usual, and re-indenting a statement or
+  block body moves the markup lines it holds along with it.
+- `Layout/LineLength` reports long lines holding markup but does not break them.
+- `Layout/TrailingWhitespace`, `Layout/IndentationStyle`, `Layout/EmptyLines`, `Layout/TrailingEmptyLines`
+  and `Layout/EndOfLine` treat quoted attribute values and `<!-- -->` comments that span lines like
+  multi-line strings: their contents are never changed.
+- `Lint/Syntax` reports the first piece of malformed markup in the compiler's words (`'<view>' is never
+  closed.`, `'</view>' expected, got '</text'.`).
+- `Lint/UnusedVariable` counts a component tag as a read of the variable it names: `Row` for `<Row />`,
+  `Flux` for `<Flux.Panels.Card/>`. Only tags starting with an upper case letter are components; `<view>`
+  names no variable.
 
 ## Flux conventions
 
@@ -241,13 +293,14 @@ Readers share a few helper modules, which are ordinary modules of their departme
 
 | Module | Provides |
 |--------|----------|
-| `readers::layout::block_structure` | `BlockStructure`: per-line block nesting, line kinds (statement, continuation, closer, comment, blank, inside a multi-line token), opener/closer lines, guard clauses, definitions and doc comments, plus re-indent and blank-line insertion edits. Used by the indentation and blank-line readers. |
+| `readers::layout::block_structure` | `BlockStructure`: per-line block nesting, line kinds (statement, continuation, closer, comment, blank, inside a multi-line token or markup), opener/closer lines, guard clauses, definitions and doc comments, plus re-indent and blank-line insertion edits. Used by the indentation and blank-line readers. |
 | `readers::layout::spacing` | The gap between adjacent code tokens, unary/binary operator classification and the gaps inside bracket pairs. Used by the token-spacing readers. |
 | `readers::layout::line_breaking` | `LineBreaker`: plans the whitespace-only line breaks of `Layout/LineLength`'s fix, simulating follow-up passes to check that a line can be finished. |
 | `readers::layout::alignment` | Character columns and the alignment checks behind `AllowForAlignment` and `ForceEqualSignAlignment`. |
 | `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
 | `readers::naming::case` | `is_lower_camel_case`. |
 | `readers::lint::nesting` | A bracket and block-keyword tracker used by `Lint/Syntax` and `Lint/DuplicateTableKey`. |
+| `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes and scope, or `None` when the file does not parse. Used by `Lint/UnusedVariable`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
 | `readers::style::quotes` | Converting string literals between single and double quotes. |
 
@@ -318,13 +371,15 @@ mod tests {
 - `Reader::default_options` lists the reader's options with their defaults (`Yaml::Integer`, `Yaml::Boolean`,
   `Yaml::String`, `Yaml::Array`); read them with `ctx.option_usize("Max", 120)` and friends.
 - `ctx.source` gives the text, the lines and every token (trivia included) with byte ranges and 1-based
-  line/column positions, plus helpers such as `code_tokens`, `token_at`, `first_code_token_on_line` and
-  `lines_inside_multiline_tokens`.
+  line/column positions, plus helpers such as `code_tokens`, `token_at`, `first_code_token_on_line`,
+  `lines_inside_multiline_tokens`, `lines_inside_markup`, `opaque_lines` and `component_references`. In a
+  Lumen template (`source.is_lumen()`) markup is `TokenKind::Markup`; see [Lumen templates](#lumen-templates).
 - A fix is a list of `Edit`s (`replace`, `remove`, `insert`) over byte ranges of the current text. Fixes that
   overlap an already accepted fix are retried in the next pass, so keep each fix minimal.
 - Test with `crate::testing`: `inspect`, `inspect_with` (options as YAML, e.g. `"Max: 80"`), `autocorrect`,
   `expect_no_offenses`, `expect_offense`, `expect_offenses` and `expect_correction` (which also checks that the
-  correction is idempotent).
+  correction is idempotent). The `_lumen` variants (`inspect_lumen`, `expect_offense_lumen`, ...) inspect the
+  snippet as a Lumen template.
 - Messages are short sentences ending with a period, with numbers in brackets where useful
   (`Line is too long. [130/120]`).
 - Code style: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, no `unsafe`, no `unwrap()` outside
@@ -338,7 +393,8 @@ cargo test -- --ignored                      # also run over the whole Flux corp
                                              # lexing, and checks that every correction (all readers together,
                                              # and the layout groups alone) keeps the code and is idempotent,
                                              # and that Layout/LineLength alone only breaks lines, shortens
-                                             # them and adds no offenses of other readers
+                                             # them and adds no offenses of other readers; also
+                                             # that correcting its Lumen templates keeps their markup
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

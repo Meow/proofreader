@@ -108,4 +108,13 @@ mod tests {
             "x = \"it's\"\n"
         );
     }
+
+    #[test]
+    fn leaves_quoted_attribute_values_alone() {
+        expect_correction_lumen(
+            READER,
+            "return <view a=\"x\" b='y' title=\"it's\">\"text\" {\"lua\"}</view>\n",
+            "return <view a=\"x\" b='y' title=\"it's\">\"text\" {'lua'}</view>\n",
+        );
+    }
 }

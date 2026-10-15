@@ -4,7 +4,8 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use crate::lexer::lex;
+use crate::lexer::{lex, lex_lumen};
+use crate::lumen::{Markup, component_root, is_component_name};
 use crate::token::{Token, TokenKind};
 
 /// A lexed source file. Line numbers are 1-based `u32`s everywhere, matching [`Token::line`].
@@ -18,13 +19,22 @@ pub struct Source {
     /// Every token, trivia included, ending with `Eof`.
     pub tokens: Vec<Token>,
     code: Vec<usize>,
+    lumen: bool,
+    markup: Markup,
 }
 
 impl Source {
-    /// Lexes `text` and builds the line table.
+    /// Lexes `text` and builds the line table. A path ending in `.lumen` makes the file a Lumen
+    /// template (see [`crate::lumen`]); any other path is lexed as GLua.
     pub fn new(path: impl Into<PathBuf>, text: impl Into<String>) -> Self {
+        let path = path.into();
         let text = text.into();
-        let tokens = lex(&text);
+        let lumen = path.extension().is_some_and(|ext| ext == "lumen");
+        let (tokens, markup) = if lumen {
+            lex_lumen(&text)
+        } else {
+            (lex(&text), Markup::default())
+        };
         let mut lines = Vec::new();
         let mut start = 0;
         for (index, byte) in text.bytes().enumerate() {
@@ -41,12 +51,40 @@ impl Source {
             .map(|(index, _)| index)
             .collect();
         Source {
-            path: path.into(),
+            path,
             text,
             lines,
             tokens,
             code,
+            lumen,
+            markup,
         }
+    }
+
+    /// Whether the file is a Lumen template, which may hold [`TokenKind::Markup`] tokens.
+    pub fn is_lumen(&self) -> bool {
+        self.lumen
+    }
+
+    /// What the lexer found out about the markup of a Lumen template; empty for GLua files.
+    pub fn markup(&self) -> &Markup {
+        &self.markup
+    }
+
+    /// The Lua variables that component tags of a Lumen template read, each with the byte offset
+    /// of its tag name: `Command` for `<Command key={id} />` and `Flux` for
+    /// `<Flux.Panels.Card/>`. Intrinsic elements (`<view>`, `<help.page>`) read no variable, and
+    /// neither do closing tags, whose names the compiler only compares with the opening tag.
+    pub fn component_references(&self) -> Vec<(&str, usize)> {
+        self.markup
+            .tags
+            .iter()
+            .filter(|tag| !tag.closing)
+            .filter_map(|tag| {
+                let name = self.text.get(tag.name.clone())?;
+                is_component_name(name).then(|| (component_root(name), tag.name.start))
+            })
+            .collect()
     }
 
     /// Number of lines, with `str::split('\n')` semantics: a trailing `\n` yields a final empty line.
@@ -184,16 +222,54 @@ impl Source {
             .is_some_and(|token| token.kind.is_string() || token.kind.is_comment())
     }
 
-    /// Lines strictly inside multi-line strings and comments: every line after the token's first
-    /// line, up to and including the line it ends on.
+    /// Whether `token` is a markup token starting with the `}` that closes a Lua splice.
+    pub fn closes_splice(&self, token: &Token) -> bool {
+        token.kind == TokenKind::Markup
+            && self.markup.splice_ends.binary_search(&token.start).is_ok()
+    }
+
+    /// Whether byte `offset` lies inside a markup token.
+    pub fn in_markup(&self, offset: usize) -> bool {
+        self.token_at(offset)
+            .is_some_and(|token| token.kind == TokenKind::Markup)
+    }
+
+    /// Lines strictly inside multi-line strings, comments and markup tokens: every line after
+    /// the token's first line, up to and including the line it ends on.
     pub fn lines_inside_multiline_tokens(&self) -> HashSet<u32> {
         self.tokens
             .iter()
             .filter(|token| {
-                token.is_multiline() && (token.kind.is_string() || token.kind.is_comment())
+                token.is_multiline()
+                    && (token.kind.is_string()
+                        || token.kind.is_comment()
+                        || token.kind == TokenKind::Markup)
             })
             .flat_map(|token| token.line + 1..=token.end_line)
             .collect()
+    }
+
+    /// Lines strictly inside the markup elements of a Lumen template: every line after the line
+    /// an outermost element starts on, up to and including the line it ends on. Lua spliced into
+    /// the markup on those lines is included.
+    pub fn lines_inside_markup(&self) -> HashSet<u32> {
+        self.markup
+            .elements
+            .iter()
+            .flat_map(|element| {
+                let (first, _) = self.position(element.start);
+                let (last, _) = self.position(element.end.saturating_sub(1).max(element.start));
+                first + 1..=last
+            })
+            .collect()
+    }
+
+    /// Lines the layout readers cannot judge from the code around them: the lines inside
+    /// multi-line tokens and inside markup.
+    pub fn opaque_lines(&self) -> HashSet<u32> {
+        let mut lines = self.lines_inside_multiline_tokens();
+        lines.extend(self.lines_inside_markup());
+        lines
     }
 }
 
@@ -323,6 +399,71 @@ mod tests {
         );
         assert!(src.first_code_token_on_line(4).is_none());
         assert!(src.last_code_token_on_line(4).is_none());
+    }
+
+    #[test]
+    fn lumen_templates_are_chosen_by_extension() {
+        let lumen = Source::new("views/card.lumen", "return <view/>\n");
+        assert!(lumen.is_lumen());
+        assert_eq!(lumen.tokens[2].kind, TokenKind::Markup);
+        assert!(lumen.in_markup(8));
+        let lua = Source::new("views/card.lua", "return <view/>\n");
+        assert!(!lua.is_lumen());
+        assert!(
+            lua.tokens
+                .iter()
+                .all(|token| token.kind != TokenKind::Markup)
+        );
+        assert!(!lua.in_markup(8));
+    }
+
+    #[test]
+    fn component_references_name_the_root_of_opening_tags() {
+        let src = "local function Command(props)\n  return <text>{props.name}</text>\nend\n\n\
+                   return <view>\n  <Command key={1} />\n  <Flux.Panels.Card>x</Flux.Panels.Card>\n\
+                   \x20 {Lumen.map(list, function(item) return <Row item={item}/> end)}\n</view>\n";
+        let source = Source::new("t.lumen", src);
+        let found: Vec<(&str, usize)> = source.component_references();
+        assert_eq!(
+            found,
+            vec![
+                ("Command", src.find("Command key").expect("tag")),
+                ("Flux", src.find("Flux.Panels.Card>x").expect("tag")),
+                ("Row", src.find("Row item").expect("tag")),
+            ]
+        );
+    }
+
+    #[test]
+    fn lua_files_have_no_component_references() {
+        let source = Source::new("t.lua", "return <Command/>\n");
+        assert!(source.component_references().is_empty());
+    }
+
+    #[test]
+    fn splices_are_closed_by_their_brace_only() {
+        let src = Source::new("t.lumen", "return <text>{x}\n  } x\n</text>\n");
+        let closing: Vec<&str> = src
+            .tokens
+            .iter()
+            .filter(|token| src.closes_splice(token))
+            .map(|token| src.text_of(token))
+            .collect();
+        assert_eq!(closing, vec!["}"]);
+    }
+
+    #[test]
+    fn markup_lines() {
+        let src = Source::new(
+            "t.lumen",
+            "local a = <view>\n  <text title=\"x\ny\">\n\n  </text>\n</view>\nlocal b = <c/>\n",
+        );
+        let mut inside: Vec<u32> = src.lines_inside_markup().into_iter().collect();
+        inside.sort_unstable();
+        assert_eq!(inside, vec![2, 3, 4, 5, 6]);
+        let tokens: Vec<u32> = src.lines_inside_multiline_tokens().into_iter().collect();
+        assert_eq!(tokens, vec![3]);
+        assert_eq!(src.opaque_lines().len(), 5);
     }
 
     #[test]

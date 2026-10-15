@@ -394,3 +394,34 @@ fn version_flag() {
         format!("proofreader {}\n", env!("CARGO_PKG_VERSION"))
     );
 }
+
+#[test]
+fn lumen_templates_are_found_and_lexed_as_markup() {
+    let dir = scratch("lumen");
+    fs::create_dir_all(dir.join("views")).expect("views dir");
+    fs::write(dir.join("init.lua"), "return 1\n").expect("lua file");
+    fs::write(dir.join("notes.txt"), "text\n").expect("text file");
+    fs::write(
+        dir.join("views/card.lumen"),
+        "local title = \"Card\"\n\nreturn <view color=\"red\">\n  {title}\n</view>\n",
+    )
+    .expect("template");
+    let listed = proofreader(&dir, &["-L"]);
+    assert_eq!(stdout(&listed), "init.lua\nviews/card.lumen\n");
+    let output = proofreader(
+        &dir,
+        &[
+            "--fix",
+            "--diff",
+            "--only",
+            "Style/StringLiterals",
+            "--no-color",
+        ],
+    );
+    let text = stdout(&output);
+    assert!(
+        text.contains("-local title = \"Card\"\n+local title = 'Card'\n"),
+        "{text}"
+    );
+    assert!(!text.contains("color='red'"), "{text}");
+}

@@ -16,8 +16,9 @@ use crate::source::Source;
 /// The fix only changes whitespace (see [`super::line_breaking`]): it breaks after the `=` of
 /// an assignment, unfolds an argument list or table constructor to one item per line, or breaks
 /// a `..`/`and`/`or`/`,` chain or a method chain, indenting new lines by `IndentationWidth`.
-/// Comment-only lines, lines that overflow inside a trailing comment and lines without a usable
-/// break point (a single long string, alignment padding) are not corrected.
+/// Comment-only lines, lines that overflow inside a trailing comment, lines without a usable
+/// break point (a single long string, alignment padding) and lines holding Lumen markup are not
+/// corrected.
 pub struct LineLength;
 
 /// The options of `Layout/LineLength` that decide which lines are too long and how deep new
@@ -559,5 +560,17 @@ mod tests {
             "{src:?} is correctable"
         );
         assert_eq!(autocorrect_with(READER, src, options), src);
+    }
+
+    #[test]
+    fn reports_long_markup_lines_without_a_fix() {
+        let src = format!(
+            "return <view style={{{{ a = 1, b = 2 }}}} title=\"{}\" />\n",
+            "x".repeat(100)
+        );
+        let offenses = inspect_lumen(READER, &src);
+        assert_eq!(offenses.len(), 1);
+        assert!(!offenses[0].correctable());
+        assert_eq!(autocorrect_lumen(READER, &src), src);
     }
 }
