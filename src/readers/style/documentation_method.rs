@@ -4,8 +4,8 @@ use yaml_rust2::Yaml;
 
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::naming::declarations::{FunctionDefinition, function_definitions};
+use crate::readers::style::doc_comments::comment_line;
 use crate::source::Source;
-use crate::token::TokenKind;
 
 /// Requires a doc comment directly before every named function definition.
 ///
@@ -54,16 +54,8 @@ fn documented(source: &Source, definition: &FunctionDefinition) -> bool {
     (1..line)
         .rev()
         .map_while(|above| comment_line(source, above))
+        .map(|comment| source.text_of(comment))
         .any(|comment| comment.starts_with("---") && !comment[3..].starts_with('-'))
-}
-
-/// The text of line `n` when the line holds nothing but a `--` line comment.
-fn comment_line(source: &Source, n: u32) -> Option<&str> {
-    let first = source.first_code_token_on_line(n)?;
-    let last = source.last_code_token_on_line(n)?;
-    let text = source.text_of(first);
-    (first == last && first.kind == (TokenKind::Comment { long: false }) && text.starts_with("--"))
-        .then_some(text)
 }
 
 inventory::submit! { Registration(|| Box::new(DocumentationMethod)) }

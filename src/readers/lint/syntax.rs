@@ -2,13 +2,16 @@
 
 use crate::offense::Severity;
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::lint::ast::parse;
 use crate::readers::lint::nesting::{Frame, Nesting, Step};
 use crate::source::Source;
 use crate::token::TokenKind;
 
 /// Reports what the lexer and a bracket/block counter can tell about broken syntax:
 /// unterminated strings and block comments, characters that are not GLua, and the first
-/// unbalanced bracket, `end` or `until`.
+/// unbalanced bracket, `end` or `until`. When none of those is found, the file is parsed and the
+/// first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``), including
+/// code after a `return` in the same block and expressions standing as statements.
 ///
 /// In Lumen templates markup is an operand and its braces are not brackets. The first piece of
 /// malformed markup is reported in the words of the Lumen compiler (`'<view>' is never closed.`,
@@ -21,7 +24,7 @@ impl Reader for Syntax {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for unterminated literals, stray characters and unbalanced blocks."
+        "Checks for unterminated literals, stray characters, unbalanced blocks and code that does not parse."
     }
 
     fn default_severity(&self) -> Severity {
@@ -70,6 +73,12 @@ impl Reader for Syntax {
                 balanced = false;
                 ctx.add_offense(token.range(), unexpected(source, text, open.as_ref()));
             }
+        }
+        if ctx.offenses().is_empty()
+            && let Err(error) = parse(source)
+            && !error.too_deep
+        {
+            ctx.add_offense(error.range, error.message);
         }
     }
 }
@@ -237,6 +246,56 @@ mod tests {
             2,
             1,
             "Unexpected `until`; expected `end` for `while` on line 1.",
+        );
+    }
+
+    #[test]
+    fn flags_code_that_does_not_parse() {
+        expect_offense(
+            READER,
+            "if x y() end\n",
+            1,
+            6,
+            "Unexpected `y`; expected `then`.",
+        );
+        expect_offense(
+            READER,
+            "function f()\n  return 1\n  x()\nend\n",
+            3,
+            3,
+            "Unexpected `x`; expected the end of the block after `return`.",
+        );
+        expect_offense(
+            READER,
+            "local a = 1 2\n",
+            1,
+            13,
+            "Unexpected `2`; expected a statement.",
+        );
+        expect_offense(
+            READER,
+            "x\n",
+            1,
+            1,
+            "Unexpected `x`; an expression cannot stand as a statement.",
+        );
+        expect_offense_lumen(
+            READER,
+            "return <view a={x y}/>\n",
+            1,
+            19,
+            "Unexpected `y`; expected `}` to close the splice.",
+        );
+    }
+
+    #[test]
+    fn reports_only_the_first_problem() {
+        expect_offense(
+            READER,
+            "x = 1 @ 2\nif x y() end\n",
+            1,
+            7,
+            "Unexpected character `@`.",
         );
     }
 

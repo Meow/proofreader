@@ -49,6 +49,21 @@ pub struct Variable {
     pub writes: Vec<Token>,
     /// For a parameter, the `function` keyword of its function.
     pub function: Option<Token>,
+    /// The variable this one shadows: the one its name resolved to where it was declared (an
+    /// earlier declaration in the same scope or one in an enclosing scope). Always `None` for
+    /// the implicit `self`.
+    pub shadows: Option<usize>,
+}
+
+/// A variable name read or assigned in the code, with the variable it resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    /// The `Name` token.
+    pub token: Token,
+    /// Index into [`Resolution::variables`] of the local it resolves to; `None` for a global.
+    pub variable: Option<usize>,
+    /// Whether the name is assigned rather than read.
+    pub write: bool,
 }
 
 /// The outcome of resolving a file.
@@ -59,9 +74,38 @@ pub struct Resolution<'a> {
     /// Every variable name occurrence outside field position, as `(byte offset, name)`:
     /// declarations, reads, writes and component tags, whether or not they resolve to a local.
     pub names: Vec<(usize, &'a str)>,
+    /// Every read and assignment of a variable name (component tags excluded), sorted by offset.
+    pub references: Vec<Reference>,
 }
 
 impl Resolution<'_> {
+    /// The reference whose name token starts at byte `offset`.
+    pub fn reference_at(&self, offset: usize) -> Option<&Reference> {
+        let index = self
+            .references
+            .partition_point(|reference| reference.token.start < offset);
+        self.references
+            .get(index)
+            .filter(|reference| reference.token.start == offset)
+    }
+
+    /// The variable a read of `name` at byte `offset` would resolve to: the latest declaration
+    /// of `name` that is visible there. A local is treated as visible from the end of its name,
+    /// so the right-hand side of its own `local` statement counts as shadowed.
+    pub fn visible_at(&self, name: &str, offset: usize) -> Option<usize> {
+        self.variables
+            .iter()
+            .enumerate()
+            .filter(|(_, variable)| {
+                variable.name == name
+                    && variable.token.end <= offset
+                    && variable.scope.start <= offset
+                    && offset < variable.scope.end
+            })
+            .map(|(id, _)| id)
+            .next_back()
+    }
+
     /// Whether `name` is declared or referenced anywhere inside `range`.
     pub fn mentions(&self, name: &str, range: &Range<usize>) -> bool {
         self.names
@@ -87,13 +131,17 @@ pub fn resolve(source: &Source) -> Option<Resolution<'_>> {
         next_component: 0,
         variables: Vec::new(),
         names: Vec::new(),
+        references: Vec::new(),
         scopes: Vec::new(),
         depth: 0,
     };
     resolver.chunk().ok()?;
+    let mut references = resolver.references;
+    references.sort_by_key(|reference| reference.token.start);
     Some(Resolution {
         variables: resolver.variables,
         names: resolver.names,
+        references,
     })
 }
 
@@ -115,6 +163,7 @@ struct Resolver<'a> {
     next_component: usize,
     variables: Vec<Variable>,
     names: Vec<(usize, &'a str)>,
+    references: Vec<Reference>,
     scopes: Vec<Vec<usize>>,
     depth: usize,
 }
@@ -302,6 +351,7 @@ impl<'a> Resolver<'a> {
     ) {
         let name = self.text(&token);
         self.names.push((token.start, name));
+        let shadows = self.lookup(name);
         self.push_variable(Variable {
             name: name.to_owned(),
             kind,
@@ -311,6 +361,7 @@ impl<'a> Resolver<'a> {
             reads: 0,
             writes: Vec::new(),
             function,
+            shadows,
         });
     }
 
@@ -338,18 +389,30 @@ impl<'a> Resolver<'a> {
     fn read(&mut self, token: Token) {
         let name = self.text(&token);
         self.names.push((token.start, name));
-        if let Some(id) = self.lookup(name) {
+        let variable = self.lookup(name);
+        if let Some(id) = variable {
             self.variables[id].reads += 1;
         }
+        self.references.push(Reference {
+            token,
+            variable,
+            write: false,
+        });
     }
 
     /// Records an assignment to the variable named by `token`.
     fn write(&mut self, token: Token) {
         let name = self.text(&token);
         self.names.push((token.start, name));
-        if let Some(id) = self.lookup(name) {
+        let variable = self.lookup(name);
+        if let Some(id) = variable {
             self.variables[id].writes.push(token);
         }
+        self.references.push(Reference {
+            token,
+            variable,
+            write: true,
+        });
     }
 
     /// Parses the whole file as one block.
@@ -579,6 +642,7 @@ impl<'a> Resolver<'a> {
                 reads: 0,
                 writes: Vec::new(),
                 function: Some(keyword),
+                shadows: None,
             });
         }
         if !self.eat(TokenKind::RParen)? {
@@ -911,6 +975,76 @@ mod tests {
         assert_eq!(reads, vec![("Card", 2), ("Row", 1), ("Card", 1)]);
         let tag = src.find("Card/>").expect("tag");
         assert!(resolution.mentions("Card", &(tag..tag + 1)));
+    }
+
+    #[test]
+    fn declarations_record_what_they_shadow() {
+        let src = "local a = 1\nlocal a = a\nfunction f(a, b) for b = 1, 2 do end end\n";
+        let source = Source::new("t.lua", src);
+        let resolution = resolve(&source).expect("parses");
+        let shadows: Vec<(&str, Option<usize>)> = resolution
+            .variables
+            .iter()
+            .map(|variable| (variable.name.as_str(), variable.shadows))
+            .collect();
+        assert_eq!(
+            shadows,
+            vec![
+                ("a", None),
+                ("a", Some(0)),
+                ("a", Some(1)),
+                ("b", None),
+                ("b", Some(3))
+            ]
+        );
+    }
+
+    #[test]
+    fn references_are_bound_and_sorted() {
+        let src = "local t\nx, t = t, y\n";
+        let source = Source::new("t.lua", src);
+        let resolution = resolve(&source).expect("parses");
+        let references: Vec<(&str, Option<usize>, bool)> = resolution
+            .references
+            .iter()
+            .map(|reference| {
+                (
+                    &src[reference.token.range()],
+                    reference.variable,
+                    reference.write,
+                )
+            })
+            .collect();
+        assert_eq!(
+            references,
+            vec![
+                ("x", None, true),
+                ("t", Some(0), true),
+                ("t", Some(0), false),
+                ("y", None, false)
+            ]
+        );
+        let offset = src.find("y").expect("y");
+        assert_eq!(
+            resolution
+                .reference_at(offset)
+                .map(|reference| reference.variable),
+            Some(None)
+        );
+        assert!(resolution.reference_at(offset + 1).is_none());
+    }
+
+    #[test]
+    fn visibility_follows_scopes() {
+        let src = "local a = 1\ndo local a = 2 print(a) end\nprint(a)\n";
+        let source = Source::new("t.lua", src);
+        let resolution = resolve(&source).expect("parses");
+        let inner = src.find("print(a) end").expect("inner") + 6;
+        let outer = src.rfind("print(a)").expect("outer") + 6;
+        assert_eq!(resolution.visible_at("a", inner), Some(1));
+        assert_eq!(resolution.visible_at("a", outer), Some(0));
+        assert_eq!(resolution.visible_at("a", 0), None);
+        assert_eq!(resolution.visible_at("b", outer), None);
     }
 
     #[test]

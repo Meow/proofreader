@@ -400,6 +400,21 @@ mod tests {
     }
 
     #[test]
+    fn breaks_crlf_lines_with_crlf() {
+        expect_correction_with(
+            "local result = combine(first_long_name..second_long_name..third_long_name, other)\r\n",
+            "Max: 50",
+            "local result = combine(\r\n  first_long_name..second_long_name..\r\n    third_long_name,\r\n  other\r\n)\r\n",
+        );
+        expect_correction_with(
+            "hook.Add('PlayerSpawn', 'my_unique_identifier', function(client)\r\n  client:SetHealth(100)\r\nend)\r\n",
+            "Max: 50",
+            "hook.Add(\r\n  'PlayerSpawn',\r\n  'my_unique_identifier',\r\n  function(client)\r\n    client:SetHealth(100)\r\n  end\r\n)\r\n",
+        );
+        assert!(inspect_with(READER, "short(a, b)\r\n", "Max: 11").is_empty());
+    }
+
+    #[test]
     fn honours_the_indentation_width() {
         let corrected = autocorrect_with(
             READER,

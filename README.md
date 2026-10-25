@@ -13,9 +13,10 @@ expression position; see [Lumen templates](#lumen-templates).
 proofreader [PATHS]... [OPTIONS]            PATHS default to "."
   -a, --fix, --autocorrect       Fix correctable offenses in place
       --diff                     With --fix: print the changes as a diff instead of writing files
+      --stdin <PATH>             Inspect the source read from stdin as the file PATH
       --only <READERS>           Comma-separated reader names or departments
       --except <READERS>         Comma-separated reader names or departments to skip
-  -f, --format <FORMAT>          progress (default) | offenses | files | quiet | json
+  -f, --format <FORMAT>          progress (default) | offenses | files | quiet | json | sarif
   -c, --config <PATH>            Use this configuration file for every target
       --show-readers [PATTERN]   List readers; with PATTERN also their effective configuration
       --fail-level <SEVERITY>    Exit 1 only for offenses at or above this severity (default: info)
@@ -70,6 +71,19 @@ are applied in the next.
 - `files`: the paths of the files with offenses.
 - `json`: `{ "metadata": {...}, "files": [{ "path", "offenses": [...] }], "summary": {...} }`; every offense has
   `severity`, `message`, `reader_name`, `corrected`, `correctable` and a `location`.
+- `sarif`: a SARIF 2.1.0 log for code scanning tools (GitHub code scanning and others): one rule per reader
+  that reported, one result per uncorrected offense with `level` `error` (error, fatal), `warning` or
+  `note`, a relative `uri` and a region in Unicode code point columns; files that could not be read or
+  written become tool notifications.
+
+### Standard input
+
+`proofreader --stdin path/to/file.lua` inspects the source read from standard input as if it were that
+file: its configuration is the one for that path (which need not exist), and a path ending in `.lumen`
+makes it a Lumen template. No other paths may be given. The report uses the selected format. With `--fix`,
+only the corrected source (or the unchanged source) is written to standard output, so editors can pipe a
+buffer through `proofreader --stdin "$FILE" --fix`; `--fix --diff` prints the diff and the report instead.
+The exit status is the usual one for the offenses that remain.
 
 ## Configuration
 
@@ -138,7 +152,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (39 in total);
+`proofreader --show-readers` lists every reader with its description (53 in total, 6 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -155,10 +169,10 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/EmptyLineBetweenDefs` | Blank lines between a function definition's `end` and the next definition (or its doc comment). | convention | yes | `NumberOfEmptyLines: 1`, `AllowAdjacentOneLineDefs: true` |
 | `Layout/EmptyLines` | No two consecutive blank lines. | convention | yes | |
 | `Layout/EmptyLinesAroundBlockBody` | No blank line directly after a line opening a block or directly before a closer line. | convention | yes | |
-| `Layout/EndOfLine` | LF line endings only (reported once per file). | convention | yes | |
+| `Layout/EndOfLine` | Consistent line endings: LF, or CRLF with `EnforcedStyle: crlf` (reported once per file). Line endings inside markup are never changed. | convention | yes | `EnforcedStyle: lf` (or `crlf`) |
 | `Layout/ExtraSpacing` | No runs of several spaces between tokens (gaps owned by other spacing readers excluded). | convention | yes | `AllowForAlignment: true` (accept a run when the next token lines up with a token on an adjacent line), `ForceEqualSignAlignment: false` (align the `=` of consecutive assignments) |
 | `Layout/IndentationConsistency` | The statements of a block are indented like its first statement; column-aligned lines are accepted. | convention | yes | `AllowIndentedGroups: true` (a run of statements exactly `IndentationWidth` deeper that returns to the block's level afterwards), `IndentationWidth: 2` |
-| `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation. | convention | yes | `IndentationWidth: 2` (spaces per tab in the fix) |
+| `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation; with `EnforcedStyle: tabs`, tabs for whole levels followed by fewer than `IndentationWidth` alignment spaces. The other indentation readers and `Layout/LineLength` skip tab-indented lines. | convention | yes | `EnforcedStyle: spaces` (or `tabs`), `IndentationWidth: 2` (spaces per tab) |
 | `Layout/IndentationWidth` | The first body line of a block is `Width` deeper than its opener line; closers align with the opener line. | convention | yes | `Width: 2` |
 | `Layout/LeadingCommentSpace` | A space after `--`, `---` and `//` (block comments and dash-only lines exempt). | convention | yes | |
 | `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
@@ -169,8 +183,8 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/SpaceBeforeComment` | A space between code and a trailing comment. | convention | yes | |
 | `Layout/SpaceBeforeParen` | No space between a function name and its `(`. | convention | yes | |
 | `Layout/SpaceInsideBraces` | `{ a = 1 }` with one space inside non-empty braces, `{}` when empty. | convention | yes | `EnforcedStyle: space` (or `no_space`) |
-| `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys. | convention | yes | |
-| `Layout/SpaceInsideParens` | No spaces inside `(` `)`. | convention | yes | |
+| `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys; exactly one with `EnforcedStyle: space`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
+| `Layout/SpaceInsideParens` | No spaces inside `(` `)`; with `EnforcedStyle: space`, exactly one inside non-empty parentheses and none in `()`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
 | `Layout/TrailingEmptyLines` | Exactly one `\n` at the end of the file. | convention | yes | |
 | `Layout/TrailingWhitespace` | No trailing spaces or tabs (outside strings). | convention | yes | |
 
@@ -179,10 +193,14 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
 | `Style/AndOr` | `and`/`or` instead of `&&`/`\|\|`. | convention | yes | |
+| `Style/CallParentheses` | Parentheses around the single string or table literal argument of a call: `f('x')`, `f({ 1 })`, `obj:m('x')`. The `omit` styles write `require 'x'` and `f { 1 }` (one space), and keep parentheses separated from their argument by a line break. Calls with comments in the way are not corrected. Disabled by default (Flux writes `require_relative 'x'` and `class 'X'` on purpose). | convention | yes | `EnforcedStyle: always` (or `omit`, `omit_for_strings`, `omit_for_tables`) |
 | `Style/DocumentationMethod` | Every named function definition is directly preceded by a doc comment starting with `---`. | convention | no | `RequireForLocalFunctions: false` |
+| `Style/IncompleteDocumentation` | A function whose doc comment has a parameter or return tag documents every named parameter (names starting with `_` exempt) and has an `@return` (or `@treturn`) when its own body returns a value other than `nil`. Disabled by default. | convention | no | `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
 | `Style/InequalityOperator` | `!=` instead of `~=`. | convention | yes | |
+| `Style/InvertIf` | An `if` with an `else` (no `elseif`) whose `else` is a single `return` with at most one value (or `break`/`continue` in a loop), whose `if` branch has at least `MinBodyLength` statements and does not end by leaving, followed by more code: invert it into a guard clause. Disabled by default. | convention | no | `MinBodyLength: 3` |
 | `Style/Not` | `!` instead of `not`. | convention | yes | |
 | `Style/ParenthesesAroundCondition` | No parentheses wrapping the whole condition of `if`, `elseif`, `while` or `until`. | convention | yes | |
+| `Style/PreferredLocalAlias` | Uses of a path such as `table.insert` after a file-level alias of it (`local insert = table.insert`; a path starting with a global, alias never reassigned) where the alias is not shadowed and the path's first name is still the global. Uses that are assigned to, chains not starting at the global (`x.table.insert`) and paths assigned anywhere in the file are exempt. The fix replaces the path with the alias. | convention | yes | |
 | `Style/Semicolon` | No semicolons (a `;` between table fields becomes a comma). | convention | yes | |
 | `Style/StringLiterals` | Single quotes, unless the string contains a single quote; long strings exempt. | convention | yes | `EnforcedStyle: single_quotes` (or `double_quotes`) |
 | `Style/TrailingCommaInTable` | No comma after the last item of a table. | convention | yes | `EnforcedStyle: no_comma` (or `comma`: required in multi-line tables) |
@@ -191,9 +209,19 @@ configuration of the matching readers as YAML, which is a good starting point fo
 
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
+| `Lint/DuplicateRegistration` | The same literal network string (`util.AddNetworkString`), network receiver (`net.Receive`), console command (`concommand.Add`) or console variable (`CreateConVar`, `CreateClientConVar`) registered again, case-insensitively, after a registration in the same or an enclosing block (the `SERVER` and `CLIENT` branches of an `if` do not conflict). Files that do not parse are skipped. | warning | no | |
+| `Lint/DuplicateRequire` | A call of a function in `Functions` with a string literal already passed to an earlier such call in the same or an enclosing block; calls whose result is indexed right away (`require('x').y`) are exempt. Files that do not parse are skipped. | warning | no | `Functions: [require]` |
 | `Lint/DuplicateTableKey` | The same literal key twice in one table constructor (`a = 1, a = 2`, `['a']`, `[1]`/`[1.0]`). | warning | no | |
+| `Lint/NonLiteralAssertMessage` | `assert(condition, message)` whose message is not a literal, a name, a field or an index, so it is built even when the assertion passes. Disabled by default. | warning | no | |
+| `Lint/RedefinedLabel` | A `::label::` whose name another label of the same block already uses (a LuaJIT compile error). Function bodies start afresh. | error | no | `AllowNestedRedefinition: true` (when `false`, also flag reusing the name of a label in an enclosing block of the same function) |
+| `Lint/RedefinedLocal` | Locals, `local function`s, parameters and loop variables whose name is already a visible local (same scope or any enclosing one, across functions), including `local x = x`. Names starting with `_` and `self` are exempt, and so is `local PANEL = {}` reused after the previous table was passed to `vgui.Register`, `vgui.RegisterTable` or `derma.DefineControl`; files that do not parse are skipped. | warning | no | `AllowParameters: false` (parameters may shadow outer locals, but not each other) |
 | `Lint/ShadowedLibrary` | Locals, parameters and loop variables named after a GMod library (`local file = ...`); `local render = render` is allowed. | warning | no | `Libraries: [player, team, file, table, sound, string, math, util, net, hook, timer, render, surface, draw, ents, game, engine, input, gui, vgui, http, os, debug, bit]` |
-| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. | fatal | no | |
+| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. When none of those is found, the file is parsed and the first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``): code after a `return` in the same block, an expression standing as a statement, assigning to a call, a missing `=` or `,`, and so on. | fatal | no | |
+| `Lint/UnbalancedAssignment` | Assignments with more targets than values (`local a, b = 1`: `b` is `nil`), unless the last value is a call, `...` or `nil`, and values beyond the number of targets (`local a = 1, 2`), which are discarded. | warning | no | |
+| `Lint/UndefinedDocParam` | Parameter tags in a function's doc comment (`@param name`, `@param name=default`, `---@param name?`, `@tparam type name`, `TypedParamTags` aliases such as `@string name`) that name no parameter of the function; methods have an implicit `self`, `...` matches a vararg. The doc comment is the `--` comment lines directly above the line of the `function` keyword, when it is the first function on its line. Files that do not parse are skipped. | warning | no | `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
+| `Lint/UnknownDocTag` | Tags (`@name` starting the text of a `--` line comment) that are not in `KnownTags`. Disabled by default. | warning | no | `KnownTags` (EmmyLua/LuaLS, LDoc, GLuaLS and Flux tags; see `--show-readers Lint/UnknownDocTag`) |
+| `Lint/UnreachableCode` | Statements after one that always leaves the block: `break`, `continue`, `goto`, `return`, a call of a terminating function, a `do ... end` that always leaves, an `if` with an `else` whose every branch leaves. A `::label::` makes the code after it reachable again; each unreachable run is reported once. | warning | no | `TerminatingFunctions: [error]` |
+| `Lint/UnusedSelf` | Methods (`function a:b()`) that never read their implicit `self` and could be defined with `.`. Disabled by default: GMod hooks and scripted classes are methods by convention. | warning | no | |
 | `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix prefixes the name with `_` at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | |
 
 ### Naming
@@ -300,8 +328,10 @@ Readers share a few helper modules, which are ordinary modules of their departme
 | `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
 | `readers::naming::case` | `is_lower_camel_case`. |
 | `readers::lint::nesting` | A bracket and block-keyword tracker used by `Lint/Syntax` and `Lint/DuplicateTableKey`. |
-| `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes and scope, or `None` when the file does not parse. Used by `Lint/UnusedVariable`. |
+| `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions and Lumen markup, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
+| `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
+| `readers::style::doc_comments` | The doc comment of every function of a parsed file (the `--` comment lines directly above its `function` keyword's line), its tags (`-- @param`, `---@param`) and documented parameter names with byte ranges, plus `comment_line`. Used by the documentation readers and `Lint/UnusedVariable`. |
 | `readers::style::quotes` | Converting string literals between single and double quotes. |
 
 ## Adding a reader
@@ -368,6 +398,9 @@ mod tests {
 ```
 
 - `Reader::default_severity` is `Warning` for `Lint/*` and `Convention` otherwise; override it when needed.
+- `Reader::default_enabled` is `true`; return `false` for a reader that is too noisy for most code bases, so
+  that it only runs with `Enabled: true` (or when named in `--only`). `--show-readers` marks such readers
+  `(disabled)`.
 - `Reader::default_options` lists the reader's options with their defaults (`Yaml::Integer`, `Yaml::Boolean`,
   `Yaml::String`, `Yaml::Array`); read them with `ctx.option_usize("Max", 120)` and friends.
 - `ctx.source` gives the text, the lines and every token (trivia included) with byte ranges and 1-based

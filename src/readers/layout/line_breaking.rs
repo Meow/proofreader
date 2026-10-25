@@ -288,9 +288,7 @@ impl<'a> LineBreaker<'a> {
         }
         let range = source.line_range(number);
         let text = &source.text[range.clone()];
-        if text.ends_with('\r') {
-            return None;
-        }
+        let text = text.strip_suffix('\r').unwrap_or(text);
         let overflow = range.start + text.char_indices().nth(self.limits.max)?.0;
         let indent = indent_width(source, number)?;
         let mut tokens = Vec::new();
@@ -869,10 +867,15 @@ impl<'a> LineBreaker<'a> {
     fn render(&self, line: &Line, candidate: &Candidate) -> Rewrite {
         let source = self.source;
         let range = line.start..source.line_range(candidate.last).end;
+        let newline = if source.line(line.number).ends_with('\r') {
+            "\r\n"
+        } else {
+            "\n"
+        };
         let mut edits: Vec<(Range<usize>, String)> = candidate
             .breaks
             .iter()
-            .map(|(gap, indent)| (gap.clone(), format!("\n{}", " ".repeat(*indent))))
+            .map(|(gap, indent)| (gap.clone(), format!("{newline}{}", " ".repeat(*indent))))
             .collect();
         edits.extend(candidate.indents.iter().map(|&(number, indent)| {
             let start = source.line_range(number).start;
@@ -911,9 +914,13 @@ fn ends_operand_chain(kind: TokenKind) -> bool {
     )
 }
 
-/// Whether `text` is at most `max` characters long.
+/// Whether `text` is at most `max` characters long, not counting the `\r` of a CRLF line end.
 fn fits(text: &str, max: usize) -> bool {
-    text.chars().nth(max).is_none()
+    text.strip_suffix('\r')
+        .unwrap_or(text)
+        .chars()
+        .nth(max)
+        .is_none()
 }
 
 /// The number of line breaks in `text`.

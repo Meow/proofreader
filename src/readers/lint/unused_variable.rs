@@ -4,8 +4,9 @@ use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::scopes::{Resolution, Variable, resolve};
 use crate::readers::naming::declarations::DeclarationKind;
+use crate::readers::style::doc_comments::{LDOC_TYPED_PARAM_TAGS, doc_comment};
 use crate::source::Source;
-use crate::token::{Token, TokenKind};
+use crate::token::Token;
 
 /// What every message tells the user to do.
 const REMEDY: &str = "Remove it or prefix it with `_`.";
@@ -89,47 +90,17 @@ fn fix(source: &Source, resolution: &Resolution, variable: &Variable) -> Option<
     Some(edits)
 }
 
-/// Byte offsets of the parameter names in the `@param name` tags for `name` in the comment lines
-/// directly above the line of the function keyword `keyword`. Only the first function on a line
-/// owns the comment above it.
+/// Byte offsets of the parameter names in the parameter tags for `name` (`@param name`,
+/// `@tparam type name`, `@string name`, ...) of the doc comment of the function whose keyword is
+/// `keyword` (see [`doc_comment`]).
 fn param_tags(source: &Source, keyword: &Token, name: &str) -> Vec<usize> {
-    let first_function = source
-        .code_tokens_on_line(keyword.line)
-        .find(|token| token.kind == TokenKind::Function);
-    if first_function != Some(keyword) {
-        return Vec::new();
-    }
-    (1..keyword.line)
-        .rev()
-        .map_while(|line| comment_line(source, line))
-        .filter_map(|comment| {
-            param_tag_name(source.text_of(comment), name).map(|offset| comment.start + offset)
-        })
-        .collect()
-}
-
-/// The comment token of line `n` when the line holds nothing but a line comment.
-fn comment_line(source: &Source, n: u32) -> Option<&Token> {
-    let first = source.first_code_token_on_line(n)?;
-    let last = source.last_code_token_on_line(n)?;
-    (first == last && first.kind == (TokenKind::Comment { long: false })).then_some(first)
-}
-
-/// Offset in `comment` of the name of its `@param` tag when that name is `name`
-/// (`-- @param name [Type]` or `-- @param name=default [Type]`).
-fn param_tag_name(comment: &str, name: &str) -> Option<usize> {
-    let tag = comment.find("@param")? + "@param".len();
-    let rest = &comment[tag..];
-    let start = tag + rest.len() - rest.trim_start_matches([' ', '\t']).len();
-    if start == tag {
-        return None;
-    }
-    let after = comment[start..].strip_prefix(name)?;
-    let continues = after
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_alphanumeric() || c == '_');
-    (!continues).then_some(start)
+    doc_comment(source, keyword).map_or_else(Vec::new, |doc| {
+        doc.params(&LDOC_TYPED_PARAM_TAGS)
+            .into_iter()
+            .filter(|param| param.name == name)
+            .map(|param| param.range.start)
+            .collect()
+    })
 }
 
 inventory::submit! { Registration(|| Box::new(UnusedVariable)) }

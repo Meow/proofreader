@@ -29,6 +29,12 @@ pub trait Reader: Sync + Send {
         }
     }
 
+    /// Whether the reader runs unless configured otherwise; readers that are noisy on most code
+    /// bases are disabled by default and enabled with `Enabled: true`.
+    fn default_enabled(&self) -> bool {
+        true
+    }
+
     /// Reader-specific options and their defaults, in display order.
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
         Vec::new()

@@ -1,4 +1,4 @@
-//! Report formatters: `progress` (default), `offenses`, `files`, `quiet` and `json`.
+//! Report formatters: `progress` (default), `offenses`, `files`, `quiet`, `json` and `sarif`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -24,6 +24,8 @@ pub enum Format {
     Quiet,
     /// Machine-readable JSON.
     Json,
+    /// SARIF 2.1.0, for code scanning tools such as GitHub's.
+    Sarif,
 }
 
 /// Totals over a run.
@@ -176,6 +178,7 @@ pub fn render(format: Format, reports: &[FileReport], color: bool) -> String {
         Format::Offenses => render_counts(reports),
         Format::Files => render_files(reports),
         Format::Json => render_json(reports),
+        Format::Sarif => render_sarif(reports),
     }
 }
 
@@ -353,6 +356,138 @@ fn render_json(reports: &[FileReport]) -> String {
     )
 }
 
+/// The SARIF level of `severity`.
+fn sarif_level(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error | Severity::Fatal => "error",
+        Severity::Warning => "warning",
+        Severity::Info | Severity::Refactor | Severity::Convention => "note",
+    }
+}
+
+/// `path` as a relative URI reference with `/` separators, or a `file://` URI when absolute.
+fn sarif_uri(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::with_capacity(text.len());
+    if path.is_absolute() {
+        uri.push_str("file://");
+        if !text.starts_with('/') {
+            uri.push('/');
+        }
+    }
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/!$&'()*+,;=:@".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
+}
+
+/// The 1-based column, in Unicode code points, of the byte offset `byte` of `line`.
+fn char_column(line: &str, byte: usize) -> usize {
+    let mut end = byte.min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line[..end].chars().count() + 1
+}
+
+/// The SARIF region of `offense`: lines and code point columns, the end column exclusive. An
+/// offense spanning lines ends at the end of its last line, whose text is not kept.
+fn sarif_region(offense: &Offense) -> String {
+    let line = offense.source_line.as_str();
+    let start = (offense.col as usize).saturating_sub(1);
+    let start_column = char_column(line, start);
+    if offense.last_line == offense.line {
+        let end_column = char_column(line, start + offense.range.len()).max(start_column);
+        format!(
+            "{{\"startLine\":{},\"startColumn\":{start_column},\"endLine\":{},\"endColumn\":{end_column}}}",
+            offense.line, offense.line
+        )
+    } else {
+        format!(
+            "{{\"startLine\":{},\"startColumn\":{start_column},\"endLine\":{}}}",
+            offense.line, offense.last_line
+        )
+    }
+}
+
+/// SARIF 2.1.0 log with one run: a rule per reader that reported, a result per uncorrected
+/// offense and a notification per file that could not be inspected or written.
+fn render_sarif(reports: &[FileReport]) -> String {
+    let remaining = || {
+        reports.iter().flat_map(|report| {
+            report
+                .offenses
+                .iter()
+                .filter(|offense| !offense.corrected)
+                .map(move |offense| (report, offense))
+        })
+    };
+    let rule_names: Vec<&str> = remaining()
+        .map(|(_, offense)| offense.reader)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let rules: Vec<String> = rule_names
+        .iter()
+        .map(|name| {
+            let description = crate::reader::reader_named(name)
+                .map_or("An error occurred while a reader was running.", |reader| {
+                    reader.description()
+                });
+            format!(
+                "{{\"id\":{},\"shortDescription\":{{\"text\":{}}}}}",
+                json_string(name),
+                json_string(description)
+            )
+        })
+        .collect();
+    let results: Vec<String> = remaining()
+        .map(|(report, offense)| {
+            let index = rule_names
+                .iter()
+                .position(|name| *name == offense.reader)
+                .unwrap_or(0);
+            format!(
+                "{{\"ruleId\":{},\"ruleIndex\":{index},\"level\":{},\"message\":{{\"text\":{}}},\
+                 \"locations\":[{{\"physicalLocation\":{{\"artifactLocation\":{{\"uri\":{}}},\"region\":{}}}}}],\
+                 \"properties\":{{\"severity\":{},\"correctable\":{}}}}}",
+                json_string(offense.reader),
+                json_string(sarif_level(offense.severity)),
+                json_string(&offense.message),
+                json_string(&sarif_uri(&report.path)),
+                sarif_region(offense),
+                json_string(offense.severity.name()),
+                offense.correctable()
+            )
+        })
+        .collect();
+    let notifications: Vec<String> = reports
+        .iter()
+        .filter_map(|report| report.error.as_deref())
+        .map(|error| {
+            format!(
+                "{{\"level\":\"error\",\"message\":{{\"text\":{}}}}}",
+                json_string(error)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{{\
+         \"tool\":{{\"driver\":{{\"name\":\"proofreader\",\"version\":{},\"rules\":[{}]}}}},\
+         \"invocations\":[{{\"executionSuccessful\":{},\"toolExecutionNotifications\":[{}]}}],\
+         \"columnKind\":\"unicodeCodePoints\",\"results\":[{}]}}]}}\n",
+        json_string(env!("CARGO_PKG_VERSION")),
+        rules.join(","),
+        notifications.is_empty(),
+        notifications.join(","),
+        results.join(",")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +628,46 @@ mod tests {
         assert!(json.contains("\"location\":{\"start_line\":1,\"start_column\":2"));
         assert!(json.contains("\"summary\":{\"offense_count\":1,\"target_file_count\":1"));
         assert_eq!(json_string("a\u{1}\n"), "\"a\\u0001\\n\"");
+    }
+
+    #[test]
+    fn sarif_output() {
+        let mut fixed = offense(1, 1, 1, "x", true);
+        fixed.corrected = true;
+        let mut warning = offense(2, 5, 3, "\u{e9}\u{e9}x = abc", false);
+        warning.reader = "Lint/Syntax";
+        warning.severity = Severity::Warning;
+        let mut multiline = offense(3, 2, 10, "a b", false);
+        multiline.last_line = 4;
+        let mut failed = report("dir\\x y.lua", vec![]);
+        failed.error = Some("cannot read x".to_owned());
+        let reports = vec![report("lib/a.lua", vec![fixed, warning, multiline]), failed];
+        let sarif = render(Format::Sarif, &reports, false);
+        assert!(sarif.starts_with(
+            "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\""
+        ));
+        assert!(sarif.contains(
+            "\"rules\":[{\"id\":\"Layout/Thing\",\"shortDescription\":{\"text\":\"An error occurred while a reader was running.\"}},\
+             {\"id\":\"Lint/Syntax\",\"shortDescription\":{\"text\":"
+        ));
+        assert!(sarif.contains(
+            "{\"ruleId\":\"Lint/Syntax\",\"ruleIndex\":1,\"level\":\"warning\",\"message\":{\"text\":\"Bad thing.\"},\
+             \"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":\"lib/a.lua\"},\
+             \"region\":{\"startLine\":2,\"startColumn\":3,\"endLine\":2,\"endColumn\":6}}}]"
+        ));
+        assert!(sarif.contains("\"region\":{\"startLine\":3,\"startColumn\":2,\"endLine\":4}"));
+        assert_eq!(sarif.matches("\"ruleId\"").count(), 2);
+        assert!(sarif.contains("\"executionSuccessful\":false,\"toolExecutionNotifications\":[{\"level\":\"error\",\"message\":{\"text\":\"cannot read x\"}}]"));
+        assert_eq!(
+            sarif_uri(std::path::Path::new("dir/x y#1.lua")),
+            "dir/x%20y%231.lua"
+        );
+        assert_eq!(
+            sarif_uri(std::path::Path::new("/abs/a.lua")),
+            "file:///abs/a.lua"
+        );
+        assert_eq!(sarif_level(Severity::Fatal), "error");
+        assert_eq!(sarif_level(Severity::Convention), "note");
     }
 
     #[test]

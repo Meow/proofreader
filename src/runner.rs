@@ -410,18 +410,43 @@ pub fn unified_diff(path: &Path, before: &str, after: &str) -> String {
 
 /// Reads, inspects and (with `fix`) writes back or diffs one file.
 pub fn inspect_file(target: &Target, options: &Options) -> FileReport {
+    let bytes = match fs::read(&target.absolute) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return FileReport {
+                path: target.path.clone(),
+                offenses: Vec::new(),
+                diff: None,
+                error: Some(format!("cannot read {}: {error}", target.path.display())),
+            };
+        }
+    };
+    let (mut report, corrected) = inspect_bytes(target, bytes, options);
+    if let Some(corrected) = corrected
+        && report.error.is_none()
+        && !options.diff
+        && let Err(error) = fs::write(&target.absolute, corrected)
+    {
+        report.error = Some(format!("cannot write {}: {error}", target.path.display()));
+    }
+    report
+}
+
+/// Inspects `bytes` as the contents of `target` without touching the file system.
+///
+/// Returns the report (with a diff under `options.diff`) and, with `options.fix`, the corrected
+/// text when it differs from the input. Text that is not valid UTF-8 is inspected lossily; its
+/// corrections are reported as an error and not returned.
+pub fn inspect_bytes(
+    target: &Target,
+    bytes: Vec<u8>,
+    options: &Options,
+) -> (FileReport, Option<String>) {
     let mut report = FileReport {
         path: target.path.clone(),
         offenses: Vec::new(),
         diff: None,
         error: None,
-    };
-    let bytes = match fs::read(&target.absolute) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            report.error = Some(format!("cannot read {}: {error}", target.path.display()));
-            return report;
-        }
     };
     let (text, lossless) = match String::from_utf8(bytes) {
         Ok(text) => (text, true),
@@ -433,19 +458,32 @@ pub fn inspect_file(target: &Target, options: &Options) -> FileReport {
     let source = Source::new(target.path.clone(), text);
     let (offenses, corrected) = inspect_source(&source, &target.config, options);
     report.offenses = offenses;
-    if let Some(corrected) = corrected {
-        if !lossless {
-            report.error = Some(format!(
-                "{} is not valid UTF-8; corrections were not written",
-                target.path.display()
-            ));
-        } else if options.diff {
-            report.diff = Some(unified_diff(&target.path, &source.text, &corrected));
-        } else if let Err(error) = fs::write(&target.absolute, corrected) {
-            report.error = Some(format!("cannot write {}: {error}", target.path.display()));
-        }
+    let Some(corrected) = corrected else {
+        return (report, None);
+    };
+    if !lossless {
+        report.error = Some(format!(
+            "{} is not valid UTF-8; corrections were not written",
+            target.path.display()
+        ));
+        return (report, None);
     }
-    report
+    if options.diff {
+        report.diff = Some(unified_diff(&target.path, &source.text, &corrected));
+    }
+    (report, Some(corrected))
+}
+
+/// The target for text read from standard input and inspected as if it were the file `path`,
+/// which need not exist: its configuration is resolved for `path`.
+pub fn stdin_target(path: &Path, store: &mut ConfigStore) -> Result<Target, RunError> {
+    let absolute = absolute_path(path);
+    let config = store.for_file(&absolute)?;
+    Ok(Target {
+        path: display_path(&absolute),
+        absolute,
+        config,
+    })
 }
 
 /// Inspects `targets` in parallel, calling `on_done(index, report)` as each file finishes.
@@ -591,6 +629,37 @@ mod tests {
             inspect_source(&Source::new("y.lua", long), &config, &Options::default());
         assert_eq!(offenses.len(), 1);
         assert_eq!(offenses[0].reader, "Layout/LineLength");
+    }
+
+    #[test]
+    fn inspects_bytes_without_writing() {
+        let target = Target {
+            path: PathBuf::from("missing/x.lua"),
+            absolute: absolute_path(Path::new("missing/x.lua")),
+            config: Arc::new(Config::defaults(Path::new("."))),
+        };
+        let options = Options {
+            fix: true,
+            filter: ReaderFilter::single("Layout/TrailingWhitespace"),
+            ..Options::default()
+        };
+        let (report, corrected) = inspect_bytes(&target, b"a = 1 \n".to_vec(), &options);
+        assert_eq!(corrected.as_deref(), Some("a = 1\n"));
+        assert!(report.error.is_none() && report.diff.is_none());
+        assert!(report.offenses[0].corrected);
+        let (report, corrected) = inspect_bytes(&target, b"a = '\xff' \n".to_vec(), &options);
+        assert!(corrected.is_none());
+        assert!(report.error.is_some());
+        let diff = Options {
+            diff: true,
+            ..options
+        };
+        let (report, _) = inspect_bytes(&target, b"a = 1 \n".to_vec(), &diff);
+        assert!(
+            report
+                .diff
+                .is_some_and(|diff| diff.contains("-a = 1 \n+a = 1\n"))
+        );
     }
 
     #[test]

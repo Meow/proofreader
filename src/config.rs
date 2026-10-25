@@ -479,7 +479,7 @@ impl Config {
         for reader in registry() {
             let name = reader.name();
             let mut section = Hash::new();
-            section.insert(key("Enabled"), Yaml::Boolean(true));
+            section.insert(key("Enabled"), Yaml::Boolean(reader.default_enabled()));
             section.insert(key("AutoCorrect"), Yaml::Boolean(true));
             for (option, value) in reader.default_options() {
                 section.insert(key(option), value);
@@ -492,7 +492,7 @@ impl Config {
             let config = ReaderConfig {
                 enabled: validator.boolean(
                     section.get(&key("Enabled")),
-                    true,
+                    reader.default_enabled(),
                     &format!("{name}.Enabled"),
                 ),
                 severity: validator

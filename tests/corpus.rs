@@ -109,7 +109,8 @@ fn all_corrections_keep_the_code_of_the_flux_corpus() {
     let config = Config::defaults(root);
     let options = Options {
         fix: true,
-        filter: ReaderFilter::default(),
+        filter: ReaderFilter::new(&[], &["Style/PreferredLocalAlias".to_owned()])
+            .expect("known reader"),
         ..Options::default()
     };
     let syntax = Options {
@@ -150,6 +151,53 @@ fn all_corrections_keep_the_code_of_the_flux_corpus() {
         );
     }
     assert!(changed > 0);
+}
+
+#[test]
+#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+fn local_alias_corrections_only_replace_paths() {
+    let root = Path::new(CORPUS);
+    let config = Config::defaults(root);
+    let options = Options {
+        fix: true,
+        filter: ReaderFilter::single("Style/PreferredLocalAlias"),
+        ..Options::default()
+    };
+    let syntax = Options {
+        filter: ReaderFilter::single("Lint/Syntax"),
+        ..Options::default()
+    };
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "lua"))
+    {
+        let path = entry.path();
+        let text = std::fs::read_to_string(path).expect("UTF-8 source");
+        let (_, corrected) = inspect_source(&Source::new(path, text.as_str()), &config, &options);
+        let Some(corrected) = corrected else {
+            continue;
+        };
+        let source = Source::new(path, corrected.as_str());
+        let (offenses, again) = inspect_source(&source, &config, &options);
+        assert!(
+            again.is_none() && offenses.is_empty(),
+            "{} is not idempotent",
+            path.display()
+        );
+        let (after, _) = inspect_source(&source, &config, &syntax);
+        assert!(
+            after.is_empty(),
+            "{} has new syntax offenses",
+            path.display()
+        );
+        assert!(
+            exact_tokens(&corrected).len() < exact_tokens(&text).len(),
+            "{} gained tokens",
+            path.display()
+        );
+    }
 }
 
 /// The kinds and exact texts of the code tokens of `text`, comments included.

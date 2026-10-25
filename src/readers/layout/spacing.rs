@@ -157,6 +157,45 @@ pub fn inside_gaps(source: &Source, open: TokenKind, close: TokenKind) -> Vec<(S
     gaps
 }
 
+/// The offense for an inside gap of a delimiter pair when the pair is spaced with `space`
+/// style (one space inside non-empty pairs, none in empty ones) as `(range, message, edit)`, or
+/// `None` when the gap is fine. `noun` names the delimiters in messages (`parentheses`).
+pub fn spaced_gap_offense(
+    source: &Source,
+    side: Side,
+    gap: Gap,
+    noun: &str,
+) -> Option<(Range<usize>, String, crate::offense::Edit)> {
+    use crate::offense::Edit;
+    if side == Side::Empty {
+        return (!gap.is_empty()).then(|| {
+            (
+                gap.range(),
+                format!("Space inside empty {noun} detected."),
+                Edit::remove(gap.range()),
+            )
+        });
+    }
+    if gap.is_empty() {
+        let delimiter = match side {
+            Side::Close => gap.after,
+            _ => gap.before,
+        };
+        return Some((
+            delimiter.range(),
+            format!("Space inside {noun} missing."),
+            Edit::insert(gap.range().start, " "),
+        ));
+    }
+    (!gap.is_single_space(source)).then(|| {
+        (
+            gap.range(),
+            format!("Extra space inside {noun} detected."),
+            Edit::replace(gap.range(), " "),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -254,6 +293,8 @@ mod tests {
             "Layout/SpaceAroundOperators:\n  ConcatStyle: space\n\
              Layout/SpaceInsideBraces:\n  EnforcedStyle: no_space\n\
              Layout/ExtraSpacing:\n  AllowForAlignment: false\n  ForceEqualSignAlignment: true\n",
+            "Layout/SpaceInsideParens:\n  EnforcedStyle: space\n\
+             Layout/SpaceInsideBrackets:\n  EnforcedStyle: space\n",
         ];
         let mut changed = 0;
         for yaml in configs {

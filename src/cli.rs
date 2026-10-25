@@ -1,7 +1,7 @@
 //! Command-line interface.
 
 use std::env;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -11,7 +11,9 @@ use crate::config::{ConfigStore, absolute_path};
 use crate::formatter::{Format, Progress, render};
 use crate::offense::Severity;
 use crate::reader::{find_reader, reader_named, registry};
-use crate::runner::{FileReport, Options, ReaderFilter, inspect_files, resolve_targets};
+use crate::runner::{
+    FileReport, Options, ReaderFilter, inspect_bytes, inspect_files, resolve_targets, stdin_target,
+};
 
 /// Command-line arguments.
 #[derive(Debug, Parser)]
@@ -22,9 +24,13 @@ use crate::runner::{FileReport, Options, ReaderFilter, inspect_files, resolve_ta
     disable_version_flag = true
 )]
 pub struct Cli {
-    /// Files or directories to inspect.
-    #[arg(default_value = ".")]
+    /// Files or directories to inspect [default: .].
     pub paths: Vec<PathBuf>,
+
+    /// Inspect the source read from standard input as if it were the file PATH; with --fix,
+    /// print only the corrected source.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["paths", "list_target_files"])]
+    pub stdin: Option<PathBuf>,
 
     /// Fix correctable offenses in place.
     #[arg(short = 'a', long = "fix", visible_alias = "autocorrect")]
@@ -145,32 +151,65 @@ pub fn run(cli: Cli) -> Result<u8> {
         filter: ReaderFilter::new(&cli.only, &cli.except)?,
         ..Options::default()
     };
-    let targets = resolve_targets(&cli.paths, &mut store)?;
-    for warning in store.take_warnings() {
-        eprintln!("{warning}");
-    }
-    if cli.list_target_files {
-        let mut out = stdout.lock();
-        for target in &targets {
-            writeln!(out, "{}", target.path.display())?;
+    let reports = if let Some(path) = &cli.stdin {
+        let target = stdin_target(path, &mut store)?;
+        for warning in store.take_warnings() {
+            eprintln!("{warning}");
         }
-        return Ok(0);
-    }
-    let reports = if cli.format == Format::Progress {
-        let progress = Progress::start(io::stdout(), targets.len(), color)?;
-        let reports = inspect_files(&targets, &options, |index, report| {
-            progress.file_done(index, report)
-        });
-        progress.finish()?;
-        reports
+        let mut bytes = Vec::new();
+        io::stdin().read_to_end(&mut bytes)?;
+        let (report, corrected) = inspect_bytes(&target, bytes.clone(), &options);
+        if cli.fix && !cli.diff {
+            if let Some(error) = &report.error {
+                eprintln!("Error: {error}");
+            }
+            let mut out = stdout.lock();
+            match corrected {
+                Some(text) => out.write_all(text.as_bytes())?,
+                None => out.write_all(&bytes)?,
+            }
+            out.flush()?;
+            return Ok(exit_status(std::slice::from_ref(&report), cli.fail_level));
+        }
+        if cli.format == Format::Progress {
+            let progress = Progress::start(io::stdout(), 1, color)?;
+            progress.file_done(0, &report);
+            progress.finish()?;
+        }
+        vec![report]
     } else {
-        inspect_files(&targets, &options, |_, _| {})
+        let paths = if cli.paths.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            cli.paths.clone()
+        };
+        let targets = resolve_targets(&paths, &mut store)?;
+        for warning in store.take_warnings() {
+            eprintln!("{warning}");
+        }
+        if cli.list_target_files {
+            let mut out = stdout.lock();
+            for target in &targets {
+                writeln!(out, "{}", target.path.display())?;
+            }
+            return Ok(0);
+        }
+        if cli.format == Format::Progress {
+            let progress = Progress::start(io::stdout(), targets.len(), color)?;
+            let reports = inspect_files(&targets, &options, |index, report| {
+                progress.file_done(index, report)
+            });
+            progress.finish()?;
+            reports
+        } else {
+            inspect_files(&targets, &options, |_, _| {})
+        }
     };
     for error in reports.iter().filter_map(|report| report.error.as_deref()) {
         eprintln!("Error: {error}");
     }
     let mut out = stdout.lock();
-    if cli.format != Format::Json {
+    if !matches!(cli.format, Format::Json | Format::Sarif) {
         for diff in reports.iter().filter_map(|report| report.diff.as_deref()) {
             if cli.format == Format::Progress {
                 writeln!(out)?;
@@ -214,7 +253,13 @@ mod tests {
         assert_eq!(cli.format, Format::Json);
         assert_eq!(cli.fail_level, Severity::Warning);
         let defaults = Cli::try_parse_from(["proofreader"]).expect("valid");
-        assert_eq!(defaults.paths, vec![PathBuf::from(".")]);
+        assert!(defaults.paths.is_empty());
+        assert!(defaults.stdin.is_none());
+        let stdin =
+            Cli::try_parse_from(["proofreader", "--stdin", "a/b.lua", "-a"]).expect("valid");
+        assert_eq!(stdin.stdin, Some(PathBuf::from("a/b.lua")));
+        assert!(Cli::try_parse_from(["proofreader", "--stdin", "a.lua", "lib"]).is_err());
+        assert!(Cli::try_parse_from(["proofreader", "-f", "sarif"]).is_ok());
         assert_eq!(defaults.fail_level, Severity::Info);
         assert!(Cli::try_parse_from(["proofreader", "--diff"]).is_err());
         let show = Cli::try_parse_from(["proofreader", "--show-readers"]).expect("valid");

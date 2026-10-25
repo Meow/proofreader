@@ -425,3 +425,186 @@ fn lumen_templates_are_found_and_lexed_as_markup() {
     );
     assert!(!text.contains("color='red'"), "{text}");
 }
+
+fn proofreader_stdin(dir: &Path, args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_proofreader"))
+        .args(args)
+        .current_dir(dir)
+        .env_remove("NO_COLOR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("the binary finishes")
+}
+
+#[test]
+fn stdin_is_inspected_as_the_given_path() {
+    let dir = scratch("stdin_report");
+    let output = proofreader_stdin(
+        &dir,
+        &[
+            "--stdin",
+            "lib/x.lua",
+            "--only",
+            "Layout/TrailingWhitespace",
+            "-f",
+            "quiet",
+        ],
+        "local a = 1  \n",
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(
+            "Offenses:\n\nlib/x.lua:1:12: C: [Correctable] Layout/TrailingWhitespace: Trailing whitespace detected.\n"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    let clean = proofreader_stdin(&dir, &["--stdin", "x.lua"], "local a = 1\n\nreturn a\n");
+    assert_eq!(clean.status.code(), Some(0), "{}", stdout(&clean));
+    assert_eq!(
+        stdout(&clean),
+        "Inspecting 1 file\n.\n\n1 file inspected, no offenses detected\n"
+    );
+}
+
+#[test]
+fn stdin_fix_prints_only_the_corrected_source() {
+    let dir = scratch("stdin_fix");
+    let output = proofreader_stdin(
+        &dir,
+        &[
+            "--stdin",
+            "x.lua",
+            "--fix",
+            "--only",
+            "Layout/TrailingWhitespace,Layout/LineLength",
+        ],
+        "local a = 1  \nlocal b = 2\n",
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "local a = 1\nlocal b = 2\n");
+    assert!(!dir.join("x.lua").exists());
+    let unchanged = proofreader_stdin(
+        &dir,
+        &["--stdin", "x.lua", "-a", "--only", "Layout/LineLength"],
+        &format!("x = '{}'\n", "y".repeat(130)),
+    );
+    assert_eq!(unchanged.status.code(), Some(1));
+    assert_eq!(stdout(&unchanged), format!("x = '{}'\n", "y".repeat(130)));
+    let diff = proofreader_stdin(
+        &dir,
+        &[
+            "--stdin",
+            "x.lua",
+            "--fix",
+            "--diff",
+            "--only",
+            "Layout/TrailingWhitespace",
+            "-f",
+            "quiet",
+        ],
+        "a = 1 \n",
+    );
+    assert_eq!(diff.status.code(), Some(0));
+    assert!(
+        stdout(&diff).starts_with("--- a/x.lua\n+++ b/x.lua\n@@ -1 +1 @@\n-a = 1 \n+a = 1\n"),
+        "{}",
+        stdout(&diff)
+    );
+}
+
+#[test]
+fn stdin_uses_the_configuration_and_language_of_the_path() {
+    let dir = scratch("stdin_config");
+    fs::create_dir_all(dir.join("sub")).expect("sub dir");
+    fs::write(
+        dir.join("sub/.proofreader.yml"),
+        "Layout/TrailingWhitespace:\n  Enabled: false\n",
+    )
+    .expect("config");
+    let args = ["--only", "Layout", "-f", "files"];
+    let outside = proofreader_stdin(
+        &dir,
+        &[&["--stdin", "missing/a.lua"], &args[..]].concat(),
+        "a = 1 \n",
+    );
+    assert_eq!(stdout(&outside), "missing/a.lua\n");
+    let inside = proofreader_stdin(
+        &dir,
+        &[&["--stdin", "sub/deep/a.lua"], &args[..]].concat(),
+        "a = 1 \n",
+    );
+    assert_eq!(inside.status.code(), Some(0));
+    assert_eq!(stdout(&inside), "");
+    let lumen = proofreader_stdin(
+        &dir,
+        &[
+            "--stdin",
+            "card.lumen",
+            "--only",
+            "Lint/Syntax",
+            "-f",
+            "files",
+        ],
+        "return <view a={1}/>\n",
+    );
+    assert_eq!(lumen.status.code(), Some(0), "{}", stdout(&lumen));
+    let lua = proofreader_stdin(
+        &dir,
+        &[
+            "--stdin",
+            "card.lua",
+            "--only",
+            "Lint/Syntax",
+            "-f",
+            "files",
+        ],
+        "return <view a={1}/>\n",
+    );
+    assert_eq!(lua.status.code(), Some(1));
+}
+
+#[test]
+fn stdin_rejects_paths() {
+    let output = proofreader_stdin(&fixtures(), &["--stdin", "x.lua", "clean.lua"], "");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("cannot be used with"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn sarif_format() {
+    let output = proofreader(
+        &fixtures(),
+        &["offenses.lua", "--only", REFERENCE_READERS, "-f", "sarif"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let sarif = stdout(&output);
+    assert!(sarif.starts_with(
+        "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\""
+    ));
+    assert!(sarif.contains(
+        "\"rules\":[{\"id\":\"Layout/LineLength\",\"shortDescription\":{\"text\":\"Checks that lines are not longer than the configured maximum.\"}},{\"id\":\"Layout/TrailingWhitespace\""
+    ), "{sarif}");
+    assert!(sarif.contains(
+        "{\"ruleId\":\"Layout/TrailingWhitespace\",\"ruleIndex\":1,\"level\":\"note\",\"message\":{\"text\":\"Trailing whitespace detected.\"},\
+         \"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":\"offenses.lua\"},\
+         \"region\":{\"startLine\":1,\"startColumn\":12,\"endLine\":1,\"endColumn\":14}}}]"
+    ), "{sarif}");
+    assert_eq!(sarif.matches("\"ruleId\"").count(), 4);
+    assert!(sarif.ends_with("]}]}\n"));
+}
