@@ -1,0 +1,58 @@
+# C++ (Stroustrup) style: GLua written the way Bjarne Stroustrup writes C++, using the C-like
+# syntax GLua allows.
+#
+# - 4-space indentation, lines of at most 80 characters
+# - C operators and comments: `!`, `!=`, `&&`, `||`, `//` and `/* */` (`---` doc comments stay,
+#   documentation tools need them)
+# - parentheses around conditions without inner spaces: if (x > 0) then
+# - "double quotes", spaces around every binary operator including `..`
+# - {1, 2, 3} without spaces inside braces; calls always take parentheses: f("x"), f({1})
+# - snake_case names
+# - no blank-line rules beyond one blank line between function definitions
+
+Layout/IndentationWidth:
+  Width: 4
+
+Layout/IndentationConsistency:
+  IndentationWidth: 4
+
+Layout/IndentationStyle:
+  IndentationWidth: 4
+
+Layout/LineLength:
+  Max: 80
+  IndentationWidth: 4
+
+Layout/SpaceAroundOperators:
+  ConcatStyle: space
+
+Layout/SpaceInsideBraces:
+  EnforcedStyle: no_space
+
+Layout/EmptyLineBeforeBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterGuardClause:
+  Enabled: false
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/AndOr:
+  EnforcedStyle: symbols
+
+Style/ParenthesesAroundCondition:
+  EnforcedStyle: require
+
+Style/CommentStyle:
+  EnforcedStyle: c
+
+Style/CallParentheses:
+  Enabled: true
+  EnforcedStyle: always
+
+Style/DocumentationMethod:
+  Enabled: false

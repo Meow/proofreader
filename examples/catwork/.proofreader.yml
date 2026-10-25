@@ -1,0 +1,26 @@
+# Catwork style: the Flux style with Clockwork's naming.
+#
+# - everything as in the Flux style (2 spaces, 'single quotes', `!`, `!=`, `and`/`or`, blank lines
+#   around blocks, ...), see ../flux/.proofreader.yml
+# - lowerCamelCase locals and parameters, PascalCase functions and methods (cw.player:GetName())
+# - no doc comment required on every function
+
+AllReaders:
+  Exclude:
+    - '**/thirdparty/**/*'                 # vendored libraries
+
+Naming/VariableName:
+  EnforcedStyle: camelCase
+
+Naming/MethodName:
+  EnforcedStyle: PascalCase
+
+Style/DocumentationMethod:
+  Enabled: false
+
+Lint/ShadowedLibrary:
+  # `player`, `team`, `file` and `sound` are fine as variable names: Clockwork keeps the
+  # libraries reachable as `_player`, `_team`, `_file` and `_sound`.
+  Libraries: ['table', 'string', 'math', 'util', 'net', 'hook', 'timer', 'render', 'surface',
+              'draw', 'ents', 'game', 'engine', 'input', 'gui', 'vgui', 'http', 'os', 'debug',
+              'bit']

@@ -608,3 +608,21 @@ fn sarif_format() {
     assert_eq!(sarif.matches("\"ruleId\"").count(), 4);
     assert!(sarif.ends_with("]}]}\n"));
 }
+
+/// `examples/.proofreader.yml` lists every setting with its default; regenerate it with
+/// `PROOFREADER_BLESS=1 cargo test --test cli`.
+#[test]
+fn example_configuration_lists_every_default() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/.proofreader.yml");
+    let expected = proofreader::config::default_configuration();
+    if std::env::var_os("PROOFREADER_BLESS").is_some() {
+        std::fs::write(&path, &expected).expect("write the example");
+    }
+    let actual = std::fs::read_to_string(&path).expect("read the example");
+    assert_eq!(
+        actual, expected,
+        "examples/.proofreader.yml is out of date; run PROOFREADER_BLESS=1 cargo test --test cli"
+    );
+    let config = proofreader::config::Config::load(&path).expect("the example loads");
+    assert!(config.warnings().is_empty(), "{:?}", config.warnings());
+}

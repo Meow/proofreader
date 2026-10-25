@@ -616,6 +616,80 @@ impl Config {
     }
 }
 
+/// Every setting with its built-in default, as a commented `.proofreader.yml`: the `AllReaders`
+/// section, then each reader (with its description as a comment) in name order.
+/// `examples/.proofreader.yml` is this text.
+pub fn default_configuration() -> String {
+    let config = Config::defaults(Path::new("."));
+    let mut out = String::from(
+        "# Every proofreader setting with its built-in default. Copy this file to the root of a GLua\n\
+         # project as .proofreader.yml and change what you need; settings left at their default can\n\
+         # be deleted. Every reader also accepts `Include` and `Exclude` (glob lists, empty by\n\
+         # default). `proofreader --show-readers <Reader>` prints the effective settings of a reader.\n\
+         \n\
+         # inherit_from: ../.proofreader.yml       # a string or a list, relative to this file\n\
+         \n\
+         AllReaders:\n  \
+         Include: ['**/*.lua', '**/*.lumen']\n  \
+         Exclude: []\n  \
+         # Severity: convention                  # overrides the default severity of every reader\n",
+    );
+    for reader in registry() {
+        let name = reader.name();
+        let Some(section) = config.sections.get(name) else {
+            continue;
+        };
+        let _ = writeln!(out, "\n# {}", reader.description());
+        let _ = writeln!(out, "{name}:");
+        let _ = writeln!(out, "  Enabled: {}", config.reader(name).enabled);
+        let _ = writeln!(out, "  Severity: {}", config.severity_of(reader.as_ref()));
+        let _ = writeln!(out, "  AutoCorrect: {}", config.reader(name).autocorrect);
+        for (option, value) in section {
+            let Some(option) = option.as_str() else {
+                continue;
+            };
+            if !STANDARD_KEYS.contains(&option) {
+                out.push_str(&wrapped(&format!("  {option}: {}", yaml_flow(value))));
+            }
+        }
+    }
+    out
+}
+
+/// `line` plus a newline, with a flow sequence longer than 100 characters wrapped after its
+/// commas and continued under its first item.
+fn wrapped(line: &str) -> String {
+    const WIDTH: usize = 100;
+    let Some(open) = line.find('[').filter(|_| line.len() > WIDTH) else {
+        return format!("{line}\n");
+    };
+    let indent = " ".repeat(open + 1);
+    let mut out = String::new();
+    let mut current = line[..=open].to_owned();
+    let items: Vec<&str> = line[open + 1..].split(", ").collect();
+    for (index, item) in items.iter().enumerate() {
+        let piece = if index + 1 < items.len() {
+            format!("{item},")
+        } else {
+            (*item).to_owned()
+        };
+        let at_start = current.len() == open + 1;
+        if !at_start && current.len() + 1 + piece.len() > WIDTH {
+            out.push_str(current.trim_end());
+            out.push('\n');
+            current = format!("{indent}{piece}");
+        } else if at_start {
+            current.push_str(&piece);
+        } else {
+            current.push(' ');
+            current.push_str(&piece);
+        }
+    }
+    out.push_str(&current);
+    out.push('\n');
+    out
+}
+
 /// Renders a string as a plain YAML scalar, single-quoting it when needed.
 fn yaml_scalar(text: &str) -> String {
     let special = text.is_empty()

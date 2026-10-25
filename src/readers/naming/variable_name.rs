@@ -1,12 +1,18 @@
 //! `Naming/VariableName`.
 
+use yaml_rust2::Yaml;
+
 use crate::reader::{Context, Reader, Registration};
-use crate::readers::naming::case::is_lower_camel_case;
+use crate::readers::naming::case::NamingStyle;
 use crate::readers::naming::declarations::{DeclarationKind, declarations};
 
-/// Flags lowerCamelCase local variables, loop variables and parameters; snake_case,
-/// SCREAMING_SNAKE_CASE and ConstantStyle are allowed. `local function` names are left to
-/// `Naming/MethodName`.
+/// Checks the names of local variables, loop variables and parameters against `EnforcedStyle`.
+///
+/// With `snake_case` (the default) lowerCamelCase names are flagged; snake_case,
+/// SCREAMING_SNAKE_CASE and ConstantStyle are allowed. With `camelCase` snake_case names are
+/// flagged instead, and with `PascalCase` every name starting with a lowercase letter. Single
+/// lowercase words (`ply`) suit `snake_case` and `camelCase`, and SCREAMING_SNAKE_CASE constants
+/// suit every style. `local function` names are left to `Naming/MethodName`.
 pub struct VariableName;
 
 impl Reader for VariableName {
@@ -15,19 +21,22 @@ impl Reader for VariableName {
     }
 
     fn description(&self) -> &'static str {
-        "Checks that local variables and parameters use snake_case."
+        "Checks that local variables and parameters follow the configured naming style."
+    }
+
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("EnforcedStyle", Yaml::String("snake_case".to_owned()))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
+        let style = NamingStyle::from_option(ctx.option_str("EnforcedStyle", "snake_case"));
+        let message = format!("Use {} for variable names.", style.label());
         let source = ctx.source;
         for declaration in declarations(source) {
             if declaration.kind != DeclarationKind::LocalFunction
-                && is_lower_camel_case(source.text_of(&declaration.token))
+                && style.rejects(source.text_of(&declaration.token))
             {
-                ctx.add_offense(
-                    declaration.token.range(),
-                    "Use snake_case for variable names.",
-                );
+                ctx.add_offense(declaration.token.range(), message.clone());
             }
         }
     }
@@ -82,6 +91,43 @@ mod tests {
     fn ignores_fields_globals_and_strings() {
         expect_no_offenses(READER, "self.fooBar = 1\nfooBar = 2\nlocal s = 'fooBar'\n");
         expect_no_offenses(READER, "function obj:doThing(x) end\n-- local fooBar\n");
+    }
+
+    #[test]
+    fn camel_case_style_flags_snake_case() {
+        let src = "local my_var, myVar, ply, MAX_PLAYERS, ModelList = 1\n\
+                   function f(some_arg, otherArg) end\nfor _, v_x in ipairs(t) do end\n\
+                   local function do_thing(x) end\n";
+        let found: Vec<(u32, u32, String)> = inspect_with(READER, src, "EnforcedStyle: camelCase")
+            .into_iter()
+            .map(|offense| (offense.line, offense.col, offense.message))
+            .collect();
+        let message = "Use camelCase for variable names.".to_owned();
+        assert_eq!(
+            found,
+            vec![
+                (1, 7, message.clone()),
+                (2, 12, message.clone()),
+                (3, 8, message)
+            ]
+        );
+    }
+
+    #[test]
+    fn pascal_case_style_flags_lowercase_names() {
+        let found: Vec<(u32, u32)> = inspect_with(
+            READER,
+            "local ply, ModelList, MAX, someVar, some_var = 1\n",
+            "EnforcedStyle: PascalCase",
+        )
+        .into_iter()
+        .map(|offense| (offense.line, offense.col))
+        .collect();
+        assert_eq!(found, vec![(1, 7), (1, 28), (1, 37)]);
+        assert_eq!(
+            inspect_with(READER, "local x\n", "EnforcedStyle: PascalCase")[0].message,
+            "Use PascalCase for variable names."
+        );
     }
 
     #[test]

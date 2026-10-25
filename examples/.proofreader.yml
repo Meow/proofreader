@@ -1,73 +1,385 @@
-# Example proofreader configuration. Copy it to the root of a GLua project as
-# .proofreader.yml and keep only what you change: every value shown here that matches the
-# built-in default can be left out. `proofreader --show-readers <Reader>` prints the effective
-# settings of a reader.
+# Every proofreader setting with its built-in default. Copy this file to the root of a GLua
+# project as .proofreader.yml and change what you need; settings left at their default can
+# be deleted. Every reader also accepts `Include` and `Exclude` (glob lists, empty by
+# default). `proofreader --show-readers <Reader>` prints the effective settings of a reader.
 
 # inherit_from: ../.proofreader.yml       # a string or a list, relative to this file
 
 AllReaders:
-  Include:
-    - '**/*.lua'
-  Exclude:
-    - 'docs/**/*'
-    - '**/*.min.lua'
-    - 'packages/pon/**/*'                # third-party code
-  # Severity: convention                  # default severity of readers without their own
+  Include: ['**/*.lua', '**/*.lumen']
+  Exclude: []
+  # Severity: convention                  # overrides the default severity of every reader
 
-Layout/LineLength:
-  Max: 120
-  AllowURI: true
-  IgnoreComments: false
-  IndentationWidth: 2                    # indentation added to the lines the fix breaks off
+# Checks for a UTF-8 byte order mark at the start of the file.
+Layout/ByteOrderMark:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
 
-Layout/IndentationWidth:
-  Width: 2
+# Checks for an empty line after the end of a multi-line block.
+Layout/EmptyLineAfterBlock:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
 
-Layout/IndentationConsistency:
-  AllowIndentedGroups: true              # net.Start(...) / indented writes / net.Send(...)
-  IndentationWidth: 2
+# Checks for an empty line after a guard clause.
+Layout/EmptyLineAfterGuardClause:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
 
-Layout/IndentationStyle:
-  IndentationWidth: 2
-
+# Checks for an empty line before multi-line block statements.
 Layout/EmptyLineBeforeBlock:
-  IncludeAnonymousFunctions: false       # true: also `btn.DoClick = function(b)` statements
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  IncludeAnonymousFunctions: false
 
+# Checks for empty lines between function definitions.
 Layout/EmptyLineBetweenDefs:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
   NumberOfEmptyLines: 1
   AllowAdjacentOneLineDefs: true
 
-Layout/SpaceAroundOperators:
-  ConcatStyle: no_space                  # 'a'..b..'c'; `space` for 'a' .. b
-  AllowForAlignment: true                # keep true when ForceEqualSignAlignment is on
+# Checks for two or more consecutive blank lines.
+Layout/EmptyLines:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
 
+# Checks for blank lines at the beginning and end of block bodies.
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for consistent LF (or CRLF) line endings.
+Layout/EndOfLine:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: lf
+
+# Checks for extra spaces between tokens.
 Layout/ExtraSpacing:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
   AllowForAlignment: true
   ForceEqualSignAlignment: false
 
+# Checks that the statements of a block are indented consistently.
+Layout/IndentationConsistency:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  AllowIndentedGroups: true
+  IndentationWidth: 2
+
+# Checks that indentation uses spaces, not tabs.
+Layout/IndentationStyle:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: spaces
+  IndentationWidth: 2
+
+# Checks that block bodies are indented by the configured width and closers align with their openers.
+Layout/IndentationWidth:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  Width: 2
+
+# Checks for a space after the comment marker.
+Layout/LeadingCommentSpace:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks that lines are not longer than the configured maximum.
+Layout/LineLength:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  Max: 120
+  AllowURI: true
+  IgnoreComments: false
+  IndentationWidth: 2
+
+# Checks for a missing space after a comma.
+Layout/SpaceAfterComma:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for space between `!` and its operand.
+Layout/SpaceAfterNot:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks that operators have a single space around them, and that `..` has none.
+Layout/SpaceAroundOperators:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  ConcatStyle: no_space
+  AllowForAlignment: true
+
+# Checks for spaces before a comma.
+Layout/SpaceBeforeComma:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for a space between code and a trailing comment.
+Layout/SpaceBeforeComment:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for spaces between a function name and its opening parenthesis.
+Layout/SpaceBeforeParen:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks the spacing inside table constructor braces.
 Layout/SpaceInsideBraces:
-  EnforcedStyle: space                   # { a = 1 }; `no_space` for {a = 1}
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: space
 
-Style/StringLiterals:
-  EnforcedStyle: single_quotes           # or double_quotes
+# Checks for spaces inside square brackets.
+Layout/SpaceInsideBrackets:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: no_space
 
-Style/TrailingCommaInTable:
-  EnforcedStyle: no_comma                # or comma (required in multi-line tables)
+# Checks for spaces inside parentheses.
+Layout/SpaceInsideParens:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: no_space
 
-Style/DocumentationMethod:
-  RequireForLocalFunctions: false
-  Exclude:
-    - 'plugins/**/views/*.lua'           # reader-level file selection
+# Checks that the file ends with exactly one newline.
+Layout/TrailingEmptyLines:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
 
-Lint/ShadowedLibrary:
+# Checks for trailing whitespace.
+Layout/TrailingWhitespace:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for network strings, receivers, console commands and variables registered twice.
+Lint/DuplicateRegistration:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for modules that are required more than once.
+Lint/DuplicateRequire:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Functions: ['require']
+
+# Checks for duplicate literal keys in table constructors.
+Lint/DuplicateTableKey:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for assert messages that are built even when the assertion passes.
+Lint/NonLiteralAssertMessage:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for labels defined twice in the same block.
+Lint/RedefinedLabel:
+  Enabled: true
   Severity: error
+  AutoCorrect: true
+  AllowNestedRedefinition: true
+
+# Checks for locals that shadow a local of the same name.
+Lint/RedefinedLocal:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  AllowParameters: false
+
+# Checks for variables and parameters named after a GMod library.
+Lint/ShadowedLibrary:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
   Libraries: ['player', 'team', 'file', 'table', 'sound', 'string', 'math', 'util', 'net', 'hook',
               'timer', 'render', 'surface', 'draw', 'ents', 'game', 'engine', 'input', 'gui',
               'vgui', 'http', 'os', 'debug', 'bit']
 
+# Checks for unterminated literals, stray characters, unbalanced blocks and code that does not parse.
+Lint/Syntax:
+  Enabled: true
+  Severity: fatal
+  AutoCorrect: true
+
+# Checks for assignments with more targets than values or more values than targets.
+Lint/UnbalancedAssignment:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for `@param` tags that name no parameter of the documented function.
+Lint/UndefinedDocParam:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  TypedParamTags: ['string', 'number', 'int', 'bool', 'tab', 'func', 'thread']
+
+# Checks for documentation tags that are not in `KnownTags`.
+Lint/UnknownDocTag:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+  KnownTags: ['accessorfunc', 'alias', 'as', 'async', 'author', 'bool', 'cast', 'category', 'class',
+              'classmod', 'copyright', 'deprecated', 'deprecation', 'deprecation_version',
+              'diagnostic', 'enum', 'environment', 'export', 'field', 'file', 'fixme', 'func',
+              'function', 'generic', 'hook', 'ignore', 'int', 'internal', 'lfunction', 'license',
+              'local', 'meta', 'module', 'nodiscard', 'number', 'operator', 'overload', 'package',
+              'param', 'private', 'protected', 'public', 'raise', 'realm', 'release', 'return',
+              'script', 'section', 'see', 'source', 'string', 'submodule', 'tab', 'table', 'thread',
+              'todo', 'topic', 'tparam', 'treturn', 'type', 'usage', 'vararg', 'variant', 'version',
+              'warning', 'within']
+
+# Checks for statements that can never run.
+Lint/UnreachableCode:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  TerminatingFunctions: ['error']
+
+# Checks for methods that never use their implicit `self`.
+Lint/UnusedSelf:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for variables that are declared but never read.
+Lint/UnusedVariable:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks that defined functions and methods follow the configured naming style.
+Naming/MethodName:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: snake_case
+
+# Checks that local variables and parameters follow the configured naming style.
 Naming/VariableName:
   Enabled: true
-  AutoCorrect: false                     # has no fix anyway; shown for completeness
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: snake_case
 
-Lint/Syntax:
-  Severity: fatal
+# Checks that logical operators are spelled `and`/`or` (or `&&`/`||`).
+Style/AndOr:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: keywords
+
+# Checks the parentheses of calls with a single string or table argument.
+Style/CallParentheses:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: always
+
+# Checks that comments use the configured comment markers.
+Style/CommentStyle:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: lua
+
+# Checks that function definitions are preceded by a doc comment.
+Style/DocumentationMethod:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  RequireForLocalFunctions: false
+
+# Checks that documented functions document every parameter and their return value.
+Style/IncompleteDocumentation:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+  TypedParamTags: ['string', 'number', 'int', 'bool', 'tab', 'func', 'thread']
+
+# Checks that the inequality operator is spelled `!=` (or `~=`).
+Style/InequalityOperator:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: bang
+
+# Checks for `if` statements that can be inverted into a guard clause to reduce nesting.
+Style/InvertIf:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+  MinBodyLength: 3
+
+# Checks that logical negation is spelled `!` (or `not`).
+Style/Not:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: bang
+
+# Checks for (or requires) parentheses around the condition of `if`, `elseif`, `while` and `until`.
+Style/ParenthesesAroundCondition:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: omit
+
+# Checks for paths used where a local alias of them is in scope.
+Style/PreferredLocalAlias:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks for semicolons.
+Style/Semicolon:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+
+# Checks that string literals use the configured quotes.
+Style/StringLiterals:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: single_quotes
+
+# Checks for a trailing comma after the last item of a table.
+Style/TrailingCommaInTable:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: no_comma

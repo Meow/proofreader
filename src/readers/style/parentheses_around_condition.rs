@@ -1,14 +1,28 @@
 //! `Style/ParenthesesAroundCondition`.
 
+use yaml_rust2::Yaml;
+
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::lint::ast::{
+    Expression, ExpressionKind, Statement, StatementKind, Visitor, parse, walk,
+};
 use crate::readers::naming::declarations::significant_tokens;
 use crate::source::Source;
 use crate::token::{Token, TokenKind};
 
-/// Flags `if (x) then`, `elseif (x) then`, `while (x) do` and `until (x)` when one parenthesised
-/// group wraps the entire condition. The fix removes the parentheses and the spaces just inside
-/// them, keeping a space between the keyword and the condition.
+/// Checks the parentheses around the conditions of `if`, `elseif`, `while` and `until`.
+///
+/// With `EnforcedStyle: omit` (the default) it flags `if (x) then`, `elseif (x) then`,
+/// `while (x) do` and `until (x)` when one parenthesised group wraps the entire condition; the
+/// fix removes the parentheses and the spaces just inside them, keeping a space between the
+/// keyword and the condition.
+///
+/// With `require` (the vanilla Garry's Mod style, `if ( !IsValid( ply ) ) then`) every condition
+/// must be one parenthesised expression; `if (a) and (b) then` is not, so it is flagged too. The
+/// fix wraps the condition as written in parentheses (`if x then` becomes `if (x) then`);
+/// `Layout/SpaceInsideParens` decides the spaces inside them. Files that do not parse are skipped
+/// in this style.
 pub struct ParenthesesAroundCondition;
 
 impl Reader for ParenthesesAroundCondition {
@@ -17,10 +31,18 @@ impl Reader for ParenthesesAroundCondition {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for parentheses around the condition of `if`, `elseif`, `while` and `until`."
+        "Checks for (or requires) parentheses around the condition of `if`, `elseif`, `while` and `until`."
+    }
+
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("EnforcedStyle", Yaml::String("omit".to_owned()))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
+        if ctx.option_str("EnforcedStyle", "omit") == "require" {
+            require(ctx);
+            return;
+        }
         let source = ctx.source;
         let tokens = significant_tokens(source);
         for (index, keyword) in tokens.iter().enumerate() {
@@ -52,6 +74,64 @@ impl Reader for ParenthesesAroundCondition {
                 ),
                 vec![remove_open(source, open), remove_close(source, &close)],
             );
+        }
+    }
+}
+
+/// Flags conditions that are not one parenthesised expression.
+fn require(ctx: &mut Context) {
+    let Ok(block) = parse(ctx.source) else {
+        return;
+    };
+    let mut finder = Unwrapped {
+        source: ctx.source,
+        found: Vec::new(),
+    };
+    walk(&block, &mut finder);
+    for (condition, keyword) in finder.found {
+        let article = if keyword == "while" { "a" } else { "an" };
+        ctx.add_offense_with_fix(
+            condition.clone(),
+            format!("Use parentheses around the condition of {article} `{keyword}`."),
+            vec![
+                Edit::insert(condition.start, "("),
+                Edit::insert(condition.end, ")"),
+            ],
+        );
+    }
+}
+
+/// Collects the conditions that are not wrapped in parentheses, with their keyword.
+struct Unwrapped<'a> {
+    source: &'a Source,
+    found: Vec<(std::ops::Range<usize>, &'a str)>,
+}
+
+impl Unwrapped<'_> {
+    /// Records `condition` of `keyword` unless it is parenthesised.
+    fn check(&mut self, condition: &Expression, keyword: &'static str) {
+        if !matches!(condition.kind, ExpressionKind::Parenthesized(_)) {
+            self.found.push((condition.range.clone(), keyword));
+        }
+    }
+}
+
+impl<'t> Visitor<'t> for Unwrapped<'_> {
+    fn statement(&mut self, statement: &'t Statement) {
+        match &statement.kind {
+            StatementKind::If { clauses, .. } => {
+                for clause in clauses {
+                    let keyword = if self.source.text_of(&clause.keyword) == "if" {
+                        "if"
+                    } else {
+                        "elseif"
+                    };
+                    self.check(&clause.condition, keyword);
+                }
+            }
+            StatementKind::While { condition, .. } => self.check(condition, "while"),
+            StatementKind::Repeat { condition, .. } => self.check(condition, "until"),
+            _ => {}
         }
     }
 }
@@ -199,5 +279,87 @@ mod tests {
         expect_correction(READER, "if ((x)) then end\n", "if x then end\n");
         expect_correction(READER, "while (a and b) do end\n", "while a and b do end\n");
         expect_correction(READER, "repeat until (a)\n", "repeat until a\n");
+    }
+
+    const REQUIRE: &str = "EnforcedStyle: require";
+
+    fn corrects(src: &str, expected: &str) {
+        let corrected = autocorrect_with(READER, src, REQUIRE);
+        assert_eq!(corrected, expected, "correction of {src:?}");
+        assert_eq!(autocorrect_with(READER, &corrected, REQUIRE), corrected);
+    }
+
+    #[test]
+    fn require_style_flags_bare_conditions() {
+        let src = "if x then\nelseif a == b then\nend\nwhile f(x) do end\nrepeat until done\n";
+        let offenses = inspect_with(READER, src, REQUIRE);
+        let found: Vec<(u32, u32, &str)> = offenses
+            .iter()
+            .map(|offense| (offense.line, offense.col, offense.message.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (1, 4, "Use parentheses around the condition of an `if`."),
+                (2, 8, "Use parentheses around the condition of an `elseif`."),
+                (4, 7, "Use parentheses around the condition of a `while`."),
+                (5, 14, "Use parentheses around the condition of an `until`."),
+            ]
+        );
+    }
+
+    #[test]
+    fn require_style_accepts_wrapped_conditions() {
+        assert!(
+            inspect_with(
+                READER,
+                "if ( !IsValid( ply ) ) then return end\nif ((a) and (b)) then end\n\
+                 while (x) do end\nrepeat until (y)\nif (\n  a\n) then end\n",
+                REQUIRE
+            )
+            .is_empty()
+        );
+        assert!(
+            inspect_with(READER, "if x then\n", REQUIRE).is_empty(),
+            "unparsable"
+        );
+    }
+
+    #[test]
+    fn require_style_flags_partial_parentheses() {
+        let offenses = inspect_with(READER, "if (a) and (b) then end\n", REQUIRE);
+        assert_eq!(offenses.len(), 1);
+        assert_eq!((offenses[0].col, offenses[0].last_col), (4, 14));
+        corrects("if (a) and (b) then end\n", "if ((a) and (b)) then end\n");
+        corrects("if (f)(x) then end\n", "if ((f)(x)) then end\n");
+    }
+
+    #[test]
+    fn require_style_autocorrects() {
+        corrects("if !x then return end\n", "if (!x) then return end\n");
+        corrects("while a and\n  b do end\n", "while (a and\n  b) do end\n");
+        corrects("repeat x() until done\n", "repeat x() until (done)\n");
+        corrects(
+            "if a then\nelseif b then\nend\n",
+            "if (a) then\nelseif (b) then\nend\n",
+        );
+        corrects(
+            "local f = function() if x then end end\n",
+            "local f = function() if (x) then end end\n",
+        );
+    }
+
+    #[test]
+    fn lumen_templates_are_checked() {
+        let corrected = autocorrect_lumen(
+            READER,
+            "return <view>{f(function() if x then end end)}</view>\n",
+        );
+        assert_eq!(
+            corrected, "return <view>{f(function() if x then end end)}</view>\n",
+            "default style"
+        );
+        let offenses = inspect_lumen(READER, "if (x) then end\nreturn <view/>\n");
+        assert_eq!(offenses.len(), 1);
     }
 }

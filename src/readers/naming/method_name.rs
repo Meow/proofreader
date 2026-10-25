@@ -1,11 +1,19 @@
 //! `Naming/MethodName`.
 
+use yaml_rust2::Yaml;
+
 use crate::reader::{Context, Reader, Registration};
-use crate::readers::naming::case::is_lower_camel_case;
+use crate::readers::naming::case::NamingStyle;
 use crate::readers::naming::declarations::function_definitions;
 
-/// Flags function and method definitions whose name is lowerCamelCase. PascalCase is allowed
-/// because GMod hooks (`PLUGIN:PlayerSpawn`) use it.
+/// Checks the last name segment of function and method definitions (including
+/// `local function`) against `EnforcedStyle`.
+///
+/// With `snake_case` (the default) lowerCamelCase names are flagged; PascalCase is allowed
+/// because GMod hooks (`PLUGIN:PlayerSpawn`) use it. With `camelCase` snake_case names are
+/// flagged instead, and with `PascalCase` (vanilla GMod and Clockwork) every name starting with
+/// a lowercase letter. SCREAMING_SNAKE_CASE names suit every style, and Lua's metamethod names
+/// (`__index`, `__tostring`, ...) are never flagged.
 pub struct MethodName;
 
 impl Reader for MethodName {
@@ -14,18 +22,59 @@ impl Reader for MethodName {
     }
 
     fn description(&self) -> &'static str {
-        "Checks that defined functions and methods use snake_case."
+        "Checks that defined functions and methods follow the configured naming style."
+    }
+
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("EnforcedStyle", Yaml::String("snake_case".to_owned()))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
+        let style = NamingStyle::from_option(ctx.option_str("EnforcedStyle", "snake_case"));
+        let message = format!("Use {} for method names.", style.label());
         let source = ctx.source;
         for definition in function_definitions(source) {
-            if is_lower_camel_case(source.text_of(&definition.last)) {
-                ctx.add_offense(definition.last.range(), "Use snake_case for method names.");
+            let name = source.text_of(&definition.last);
+            if !METAMETHODS.contains(&name) && style.rejects(name) {
+                ctx.add_offense(definition.last.range(), message.clone());
             }
         }
     }
 }
+
+/// The metamethod names Lua and LuaJIT look up, which keep their spelling in every style.
+const METAMETHODS: &[&str] = &[
+    "__add",
+    "__band",
+    "__bnot",
+    "__bor",
+    "__bxor",
+    "__call",
+    "__close",
+    "__concat",
+    "__div",
+    "__eq",
+    "__gc",
+    "__idiv",
+    "__index",
+    "__ipairs",
+    "__le",
+    "__len",
+    "__lt",
+    "__metatable",
+    "__mod",
+    "__mode",
+    "__mul",
+    "__name",
+    "__newindex",
+    "__pairs",
+    "__pow",
+    "__shl",
+    "__shr",
+    "__sub",
+    "__tostring",
+    "__unm",
+];
 
 inventory::submit! { Registration(|| Box::new(MethodName)) }
 
@@ -61,6 +110,51 @@ mod tests {
         expect_no_offenses(
             READER,
             "obj:doThing()\nlocal f = function(x) end\ndoThing()\n",
+        );
+    }
+
+    #[test]
+    fn camel_case_style_flags_snake_case() {
+        let src = "function do_thing() end\nfunction obj:doThing() end\n\
+                   function GM:PlayerSpawn() end\nlocal function helper_fn() end\n";
+        let found: Vec<(u32, u32, String)> = inspect_with(READER, src, "EnforcedStyle: camelCase")
+            .into_iter()
+            .map(|offense| (offense.line, offense.col, offense.message))
+            .collect();
+        let message = "Use camelCase for method names.".to_owned();
+        assert_eq!(found, vec![(1, 10, message.clone()), (4, 16, message)]);
+    }
+
+    #[test]
+    fn pascal_case_style_flags_lowercase_names() {
+        let src = "function GM:PlayerSpawn() end\nfunction obj:think() end\n\
+                   function lib.doThing() end\nlocal function add_hook() end\n\
+                   function lib.INIT() end\n";
+        let found: Vec<(u32, u32, String)> = inspect_with(READER, src, "EnforcedStyle: PascalCase")
+            .into_iter()
+            .map(|offense| (offense.line, offense.col, offense.message))
+            .collect();
+        let message = "Use PascalCase for method names.".to_owned();
+        assert_eq!(
+            found,
+            vec![
+                (2, 14, message.clone()),
+                (3, 14, message.clone()),
+                (4, 16, message)
+            ]
+        );
+    }
+
+    #[test]
+    fn metamethods_keep_their_names() {
+        expect_no_offenses(READER, "function META:__tostring() end\n");
+        assert!(
+            inspect_with(
+                READER,
+                "function META:__index(k) end\nfunction mt.__call() end\n",
+                "EnforcedStyle: PascalCase"
+            )
+            .is_empty()
         );
     }
 

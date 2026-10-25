@@ -1,0 +1,59 @@
+# Vanilla Garry's Mod style: the style of the Lua that ships with the game (garrysmod/lua and the
+# base and sandbox gamemodes).
+#
+# - tab indentation, no line length limit
+# - spaces inside parentheses and brackets: print( "x" ), list[ name ], function( a, b )
+# - parentheses around conditions: if ( !IsValid( ply ) ) then
+# - "double quotes", `!`, `!=`, `and`/`or` (the game's code mixes in `&&`/`||`; set
+#   `Style/AndOr: EnforcedStyle: symbols` to prefer those), "a" .. b .. "c" with spaces around `..`
+# - lowerCamelCase locals, PascalCase functions and hooks
+# - no blank-line rules: function bodies may start and end with a blank line
+
+Layout/IndentationStyle:
+  EnforcedStyle: tabs
+  IndentationWidth: 4                      # how wide a tab is
+
+Layout/IndentationWidth:
+  Width: 4
+
+Layout/IndentationConsistency:
+  IndentationWidth: 4
+
+Layout/LineLength:
+  Enabled: false
+
+Layout/SpaceInsideParens:
+  EnforcedStyle: space
+
+Layout/SpaceInsideBrackets:
+  EnforcedStyle: space
+
+Layout/SpaceAroundOperators:
+  ConcatStyle: space
+
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: false
+
+Layout/EmptyLineBeforeBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterGuardClause:
+  Enabled: false
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/ParenthesesAroundCondition:
+  EnforcedStyle: require
+
+Style/DocumentationMethod:
+  Enabled: false                           # functions carry --[[ Name: / Desc: ]] headers
+
+Naming/VariableName:
+  EnforcedStyle: camelCase
+
+Naming/MethodName:
+  EnforcedStyle: PascalCase

@@ -748,14 +748,16 @@ impl BlockStructure {
         lines
     }
 
-    /// Edits that re-indent line `n` to `width` spaces and shift its continuation lines, the lines
-    /// of markup it starts and the comment lines attached above it by the same amount. Lines
-    /// whose indentation holds tabs are left alone.
+    /// Edits that re-indent line `n` to `width` columns and shift its continuation lines, the
+    /// lines of markup it starts and the comment lines attached above it by the same amount.
+    /// Indentation is measured in columns with a tab advancing to the next multiple of `tab`, and
+    /// rewritten with spaces (`Layout/IndentationStyle` turns them into tabs where tabs are the
+    /// style).
     ///
     /// Each edit replaces the indentation together with the line's first token, so that it
     /// conflicts with any other edit touching the start of that line.
-    pub fn reindent(&self, source: &Source, n: u32, width: usize) -> Vec<Edit> {
-        let current = source.indentation(n).len();
+    pub fn reindent(&self, source: &Source, n: u32, width: usize, tab: usize) -> Vec<Edit> {
+        let current = indent_columns(source, n, tab);
         let mut edits = Vec::new();
         let comments = self.attached_comment_lines(source, n);
         for line in comments
@@ -763,12 +765,9 @@ impl BlockStructure {
             .chain(std::iter::once(n))
             .chain(self.lines_moving_with(n))
         {
-            let indentation = source.indentation(line);
-            if indentation.contains('\t') {
-                continue;
-            }
-            let target = (indentation.len() + width).saturating_sub(current);
-            if target == indentation.len() {
+            let columns = indent_columns(source, line, tab);
+            let target = (columns + width).saturating_sub(current);
+            if target == columns && !source.indentation(line).contains('\t') {
                 continue;
             }
             if let Some(edit) = reindent_line(source, line, target) {
@@ -778,22 +777,28 @@ impl BlockStructure {
         edits
     }
 
-    /// Edits that re-indent the first body line of `block` to `width` spaces and shift every
+    /// Edits that re-indent the first body line of `block` to `width` columns and shift every
     /// other line of the body (comments, nested blocks, their closers and lines inside markup
     /// included) by the same amount, so that the body keeps its shape and any column alignment
-    /// inside it. Blank lines, lines inside multi-line tokens, lines whose indentation holds tabs
-    /// and lines indented less than the first body line are left alone. Without a closer, only
+    /// inside it. Columns are counted as in [`BlockStructure::reindent`]. Blank lines, lines
+    /// inside multi-line tokens and lines indented less than the first body line are left alone. Without a closer, only
     /// the first body line and the lines moving with it move.
-    pub fn reindent_body(&self, source: &Source, block: &Block, width: usize) -> Vec<Edit> {
+    pub fn reindent_body(
+        &self,
+        source: &Source,
+        block: &Block,
+        width: usize,
+        tab: usize,
+    ) -> Vec<Edit> {
         let (Some(first), Some(start), Some(end)) =
             (block.first_body_line, block.body_start, block.close_line())
         else {
             return block
                 .first_body_line
-                .map(|line| self.reindent(source, line, width))
+                .map(|line| self.reindent(source, line, width, tab))
                 .unwrap_or_default();
         };
-        let current = source.indentation(first).len();
+        let current = indent_columns(source, first, tab);
         let mut edits = Vec::new();
         for line in start.line + 1..end {
             let kind = self.kind(line);
@@ -802,12 +807,12 @@ impl BlockStructure {
             {
                 continue;
             }
-            let indentation = source.indentation(line);
-            if indentation.contains('\t') || indentation.len() < current {
+            let columns = indent_columns(source, line, tab);
+            if columns < current {
                 continue;
             }
-            let target = indentation.len() + width - current;
-            if target == indentation.len() {
+            let target = columns + width - current;
+            if target == columns && !source.indentation(line).contains('\t') {
                 continue;
             }
             if let Some(edit) = reindent_line(source, line, target) {
@@ -879,6 +884,24 @@ pub fn insert_blank_lines_after(source: &Source, n: u32, count: usize) -> Option
         end..end + 1,
         format!("\n{}", newline.repeat(count)),
     ))
+}
+
+/// Width in columns of `indentation`, a tab advancing to the next multiple of `tab` columns.
+pub fn visual_width(indentation: &str, tab: usize) -> usize {
+    let tab = tab.max(1);
+    indentation.chars().fold(0, |columns, c| {
+        if c == '\t' {
+            (columns / tab + 1) * tab
+        } else {
+            columns + 1
+        }
+    })
+}
+
+/// Width in columns of the indentation of line `n`, a tab advancing to the next multiple of
+/// `tab` columns.
+pub fn indent_columns(source: &Source, n: u32, tab: usize) -> usize {
+    visual_width(source.indentation(n), tab)
 }
 
 /// Width of the indentation of line `n`, or `None` when it contains tabs.
@@ -1180,7 +1203,7 @@ mod tests {
     #[test]
     fn reindents_a_statement_with_its_continuations() {
         let (source, structure) = analyse("    local x = a and\n      b\nc()\n");
-        let edits = structure.reindent(&source, 1, 2);
+        let edits = structure.reindent(&source, 1, 2, 2);
         assert_eq!(
             edits,
             vec![
@@ -1191,7 +1214,7 @@ mod tests {
         let (source, structure) = analyse("x()\n  --- Doc.\n  -- More.\n  function f()\n  end\n");
         assert_eq!(structure.attached_comment_lines(&source, 4), vec![2, 3]);
         assert_eq!(
-            structure.reindent(&source, 4, 0),
+            structure.reindent(&source, 4, 0, 2),
             vec![
                 Edit::replace(4..14, "--- Doc."),
                 Edit::replace(15..25, "-- More."),
@@ -1200,7 +1223,7 @@ mod tests {
         );
         let (source, structure) = analyse("x()\n");
         assert_eq!(
-            structure.reindent(&source, 1, 2),
+            structure.reindent(&source, 1, 2, 2),
             vec![Edit::replace(0..1, "  x")]
         );
     }
@@ -1212,7 +1235,7 @@ mod tests {
         );
         let block = &structure.blocks()[0];
         assert_eq!(
-            structure.reindent_body(&source, block, 2),
+            structure.reindent_body(&source, block, 2, 2),
             vec![
                 Edit::replace(6..11, "  a"),
                 Edit::replace(20..28, "  -- c"),
@@ -1223,12 +1246,12 @@ mod tests {
         );
         let (source, structure) = analyse("if x then\n      y()\n    z()\nend\n");
         assert_eq!(
-            structure.reindent_body(&source, &structure.blocks()[0], 2),
+            structure.reindent_body(&source, &structure.blocks()[0], 2, 2),
             vec![Edit::replace(10..17, "  y")]
         );
         let (source, structure) = analyse("if x then\n    y()\n");
         assert_eq!(
-            structure.reindent_body(&source, &structure.blocks()[0], 2),
+            structure.reindent_body(&source, &structure.blocks()[0], 2, 2),
             vec![Edit::replace(10..15, "  y")]
         );
     }
@@ -1348,7 +1371,7 @@ mod tests {
             ]
         );
         assert_eq!(structure.opener_line_of_closer(7), Some(1));
-        let edits = structure.reindent(&source, 2, 4);
+        let edits = structure.reindent(&source, 2, 4, 2);
         assert_eq!(edits.len(), 5);
     }
 }

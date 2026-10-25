@@ -2,7 +2,7 @@
 
 use yaml_rust2::Yaml;
 
-use super::block_structure::{BlockStructure, LineKind, indent_width, indentation_range};
+use super::block_structure::{BlockStructure, LineKind, indent_columns, indentation_range};
 use crate::reader::{Context, Reader, Registration};
 use crate::source::Source;
 
@@ -33,18 +33,23 @@ impl Reader for IndentationWidth {
         let source = ctx.source;
         let structure = BlockStructure::new(source);
         check_bodies(ctx, source, &structure, width);
-        check_closers(ctx, source, &structure);
+        check_closers(ctx, source, &structure, width);
     }
 }
 
 /// Indentation widths a line hanging off `anchor` may be measured from: the anchor itself first,
 /// then the start of the statement holding it. `None` when the anchor cannot be measured.
-fn bases(source: &Source, structure: &BlockStructure, anchor: u32) -> Option<Vec<usize>> {
+fn bases(
+    source: &Source,
+    structure: &BlockStructure,
+    anchor: u32,
+    tab: usize,
+) -> Option<Vec<usize>> {
     if structure.kind(anchor) == LineKind::Skipped {
         return None;
     }
-    let base = indent_width(source, anchor)?;
-    let statement = indent_width(source, structure.statement_line(anchor)).unwrap_or(base);
+    let base = indent_columns(source, anchor, tab);
+    let statement = indent_columns(source, structure.statement_line(anchor), tab);
     Some(vec![base, statement])
 }
 
@@ -57,18 +62,17 @@ fn check_bodies(ctx: &mut Context, source: &Source, structure: &BlockStructure, 
         if structure.kind(line) != LineKind::Statement {
             continue;
         }
-        let (Some(actual), Some(first)) = (indent_width(source, line), structure.first_token(line))
-        else {
+        let Some(first) = structure.first_token(line) else {
             continue;
         };
-        let Some(mut bases) = bases(source, structure, block.anchor_line) else {
+        let actual = indent_columns(source, line, width);
+        let Some(mut bases) = bases(source, structure, block.anchor_line, width) else {
             continue;
         };
         if let Some(body_line) = block.body_start.map(|token| token.line)
             && structure.kind(body_line) != LineKind::Skipped
-            && let Some(width) = indent_width(source, body_line)
         {
-            bases.push(width);
+            bases.push(indent_columns(source, body_line, width));
         }
         if bases.iter().any(|base| actual == base + width) {
             continue;
@@ -78,13 +82,14 @@ fn check_bodies(ctx: &mut Context, source: &Source, structure: &BlockStructure, 
         ctx.add_offense_with_fix(
             indentation_range(source, line, first),
             format!("Use {width} (not {relative}) spaces for indentation."),
-            structure.reindent_body(source, block, base + width),
+            structure.reindent_body(source, block, base + width, width),
         );
     }
 }
 
-/// Reports closer lines that are not aligned with the line opening their block.
-fn check_closers(ctx: &mut Context, source: &Source, structure: &BlockStructure) {
+/// Reports closer lines that are not aligned with the line opening their block; a tab counts as
+/// `tab` columns.
+fn check_closers(ctx: &mut Context, source: &Source, structure: &BlockStructure, tab: usize) {
     for line in 1..=structure.line_count() {
         if structure.kind(line) != LineKind::Closer {
             continue;
@@ -98,11 +103,11 @@ fn check_closers(ctx: &mut Context, source: &Source, structure: &BlockStructure)
         if block.kind.is_bracket() && !block.opens_line {
             continue;
         }
-        let (Some(actual), Some(first)) = (indent_width(source, line), structure.first_token(line))
-        else {
+        let Some(first) = structure.first_token(line) else {
             continue;
         };
-        let Some(bases) = bases(source, structure, block.anchor_line) else {
+        let actual = indent_columns(source, line, tab);
+        let Some(bases) = bases(source, structure, block.anchor_line, tab) else {
             continue;
         };
         if bases.contains(&actual) {
@@ -116,7 +121,7 @@ fn check_closers(ctx: &mut Context, source: &Source, structure: &BlockStructure)
                 source.text_of(&first),
                 block.anchor_line
             ),
-            structure.reindent(source, line, base),
+            structure.reindent(source, line, base, tab),
         );
     }
 }

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use yaml_rust2::Yaml;
 
-use super::block_structure::{BlockStructure, LineKind, indent_width, indentation_range};
+use super::block_structure::{BlockStructure, LineKind, indent_columns, indentation_range};
 use crate::reader::{Context, Reader, Registration};
 use crate::source::Source;
 use crate::token::Token;
@@ -58,11 +58,10 @@ impl Reader for IndentationConsistency {
             if structure.kind(line) != LineKind::Statement {
                 continue;
             }
-            let (Some(width), Some(first)) =
-                (indent_width(source, line), structure.first_token(line))
-            else {
+            let Some(first) = structure.first_token(line) else {
                 continue;
             };
+            let width = indent_columns(source, line, group_width);
             let block = blocks
                 .entry(structure.innermost(line))
                 .or_insert_with(|| BlockIndent {
@@ -106,7 +105,7 @@ impl Reader for IndentationConsistency {
             ctx.add_offense_with_fix(
                 indentation_range(source, line, first),
                 "Inconsistent indentation detected.",
-                structure.reindent(source, line, target),
+                structure.reindent(source, line, target, group_width),
             );
         }
     }
@@ -220,9 +219,20 @@ mod tests {
     }
 
     #[test]
-    fn ignores_multiline_strings_comments_and_tabs() {
+    fn ignores_multiline_strings_and_comments() {
         expect_no_offenses(READER, "local s = [[\n  a\n b]]\n-- c\n   -- d\nx()\n");
-        expect_no_offenses(READER, "a()\n\tb()\n");
+    }
+
+    #[test]
+    fn measures_tabs_by_their_width() {
+        expect_offense(
+            READER,
+            "a()\n\t\tb()\nc()\n",
+            2,
+            1,
+            "Inconsistent indentation detected.",
+        );
+        expect_no_offenses(READER, "if x then\n\ta()\n  b()\nend\n");
     }
 
     #[test]

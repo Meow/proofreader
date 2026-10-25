@@ -1,10 +1,13 @@
 //! `Style/InequalityOperator`.
 
+use yaml_rust2::Yaml;
+
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::token::TokenKind;
 
-/// Flags the Lua inequality operator `~=` in favour of GLua's `!=`.
+/// Checks the spelling of the inequality operator: with `EnforcedStyle: bang` (the default) the
+/// Lua operator `~=` is flagged in favour of GLua's `!=`, with `tilde` the other way round.
 pub struct InequalityOperator;
 
 impl Reader for InequalityOperator {
@@ -13,17 +16,26 @@ impl Reader for InequalityOperator {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for uses of `~=` instead of `!=`."
+        "Checks that the inequality operator is spelled `!=` (or `~=`)."
+    }
+
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("EnforcedStyle", Yaml::String("bang".to_owned()))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
+        let (wanted, unwanted) = if ctx.option_str("EnforcedStyle", "bang") == "tilde" {
+            ("~=", "!=")
+        } else {
+            ("!=", "~=")
+        };
         let source = ctx.source;
         for token in source.code_tokens() {
-            if token.kind == TokenKind::Ne && source.text_of(token) == "~=" {
+            if token.kind == TokenKind::Ne && source.text_of(token) == unwanted {
                 ctx.add_offense_with_fix(
                     token.range(),
-                    "Use `!=` instead of `~=`.",
-                    vec![Edit::replace(token.range(), "!=")],
+                    format!("Use `{wanted}` instead of `{unwanted}`."),
+                    vec![Edit::replace(token.range(), wanted)],
                 );
             }
         }
@@ -55,5 +67,16 @@ mod tests {
     fn accepts_other_code() {
         expect_no_offenses(READER, "if a != b then end\n");
         expect_no_offenses(READER, "s = '~='\nt = { ['~='] = 1 }\n-- a ~= b\n");
+    }
+
+    #[test]
+    fn tilde_style() {
+        let style = "EnforcedStyle: tilde";
+        let offenses = inspect_with(READER, "if a != b and c ~= d then end\n", style);
+        assert_eq!(offenses.len(), 1);
+        assert_eq!((offenses[0].line, offenses[0].col), (1, 6));
+        assert_eq!(offenses[0].message, "Use `~=` instead of `!=`.");
+        assert_eq!(autocorrect_with(READER, "x = a!=b\n", style), "x = a~=b\n");
+        assert!(inspect_with(READER, "s = '!='\n-- a != b\n", style).is_empty());
     }
 }

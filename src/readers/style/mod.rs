@@ -2,6 +2,7 @@
 
 pub mod and_or;
 pub mod call_parentheses;
+pub mod comment_style;
 pub mod doc_comments;
 pub mod documentation_method;
 pub mod incomplete_documentation;

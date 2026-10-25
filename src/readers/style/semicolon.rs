@@ -2,6 +2,7 @@
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::lint::ast::{Expression, ExpressionKind, Visitor, parse, walk};
 use crate::source::Source;
 use crate::token::TokenKind;
 
@@ -10,7 +11,9 @@ use crate::token::TokenKind;
 /// A semicolon ending a statement is removed together with the spaces around it; one that
 /// separates two statements on a line becomes a single space, except before `(`, where removing
 /// it would turn the next statement into a call and the offense is left uncorrected. A
-/// semicolon separating table fields becomes a comma.
+/// semicolon separating table fields becomes a comma. Table separators are found with the syntax
+/// tree, so a statement semicolon in a function inside a table stays a statement semicolon; in a
+/// file that does not parse, a semicolon directly inside braces is taken as a table separator.
 pub struct Semicolon;
 
 impl Reader for Semicolon {
@@ -24,6 +27,7 @@ impl Reader for Semicolon {
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
+        let separators = table_separators(source);
         let mut open = Vec::new();
         for (code_index, token) in source.code_tokens().enumerate() {
             match token.kind {
@@ -33,7 +37,12 @@ impl Reader for Semicolon {
                 TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
                     open.pop();
                 }
-                TokenKind::Semicolon if open.last() == Some(&TokenKind::LBrace) => {
+                TokenKind::Semicolon
+                    if separators.as_ref().map_or_else(
+                        || open.last() == Some(&TokenKind::LBrace),
+                        |found| found.binary_search(&token.start).is_ok(),
+                    ) =>
+                {
                     ctx.add_offense_with_fix(
                         token.range(),
                         "Use `,` instead of `;` to separate table fields.",
@@ -51,6 +60,31 @@ impl Reader for Semicolon {
             }
         }
     }
+}
+
+/// Start offsets of the `;` separating table fields, sorted, or `None` when the file does not
+/// parse.
+fn table_separators(source: &Source) -> Option<Vec<usize>> {
+    struct Separators(Vec<usize>);
+    impl<'t> Visitor<'t> for Separators {
+        fn expression(&mut self, expression: &'t Expression) {
+            if let ExpressionKind::Table(table) = &expression.kind {
+                self.0.extend(
+                    table
+                        .fields
+                        .iter()
+                        .filter_map(|field| field.separator)
+                        .filter(|separator| separator.kind == TokenKind::Semicolon)
+                        .map(|separator| separator.start),
+                );
+            }
+        }
+    }
+    let block = parse(source).ok()?;
+    let mut separators = Separators(Vec::new());
+    walk(&block, &mut separators);
+    separators.0.sort_unstable();
+    Some(separators.0)
 }
 
 /// The edit removing the statement semicolon at `source.tokens[index]`, or `None` when the
@@ -110,6 +144,22 @@ mod tests {
         expect_offense(READER, "t = { a = 1; b = 2 }\n", 1, 12, TABLE);
         expect_offense(READER, "t = { f(x); [k] = v }\n", 1, 11, TABLE);
         expect_correction(READER, "t = { a = 1; b = 2 }\n", "t = { a = 1, b = 2 }\n");
+    }
+
+    #[test]
+    fn statements_in_functions_inside_tables_are_statements() {
+        let src = "local t = { f = function(v) local a = 1; return a end; g = 2 }\n";
+        expect_offenses(READER, src, &[(1, 40, MESSAGE), (1, 54, TABLE)]);
+        expect_correction(
+            READER,
+            src,
+            "local t = { f = function(v) local a = 1 return a end, g = 2 }\n",
+        );
+    }
+
+    #[test]
+    fn falls_back_to_braces_when_the_file_does_not_parse() {
+        expect_offense(READER, "t = { a = 1; b = 2 }\nif x\n", 1, 12, TABLE);
     }
 
     #[test]

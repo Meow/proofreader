@@ -1,0 +1,65 @@
+# Flux style: the style of the Flux framework, which is proofreader's built-in default.
+#
+# Every value below matches the default and could be left out; they are listed to show what
+# defines the style. See ../.proofreader.yml for every setting.
+#
+# - 2-space indentation, lines of at most 120 characters, LF line endings
+# - 'single quotes', `!`, `!=`, `and`/`or`, `--` comments, no semicolons
+# - 'a'..b..'c' without spaces around `..`, { a = 1 } with spaces inside braces, f(a) without
+# - snake_case variables and functions (PascalCase hooks allowed), doc comment on every function
+# - blank lines around multi-line blocks, after guard clauses and between definitions
+
+Layout/IndentationStyle:
+  EnforcedStyle: spaces
+  IndentationWidth: 2
+
+Layout/IndentationWidth:
+  Width: 2
+
+Layout/LineLength:
+  Max: 120
+
+Layout/EndOfLine:
+  EnforcedStyle: lf
+
+Layout/SpaceAroundOperators:
+  ConcatStyle: no_space
+
+Layout/SpaceInsideBraces:
+  EnforcedStyle: space
+
+Layout/SpaceInsideParens:
+  EnforcedStyle: no_space
+
+Layout/SpaceInsideBrackets:
+  EnforcedStyle: no_space
+
+Style/StringLiterals:
+  EnforcedStyle: single_quotes
+
+Style/AndOr:
+  EnforcedStyle: keywords
+
+Style/Not:
+  EnforcedStyle: bang
+
+Style/InequalityOperator:
+  EnforcedStyle: bang
+
+Style/ParenthesesAroundCondition:
+  EnforcedStyle: omit
+
+Style/CommentStyle:
+  EnforcedStyle: lua
+
+Style/TrailingCommaInTable:
+  EnforcedStyle: no_comma
+
+Style/DocumentationMethod:
+  Enabled: true
+
+Naming/VariableName:
+  EnforcedStyle: snake_case
+
+Naming/MethodName:
+  EnforcedStyle: snake_case

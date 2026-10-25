@@ -24,7 +24,7 @@ use crate::source::Source;
 pub const READER_ERROR: &str = "Lint/ReaderError";
 
 /// Default maximum number of autocorrect passes per file.
-pub const MAX_PASSES: usize = 10;
+pub const MAX_PASSES: usize = 25;
 
 /// An error that stops a run before any file is inspected.
 #[derive(Debug, Error)]

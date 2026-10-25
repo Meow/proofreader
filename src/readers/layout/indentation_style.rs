@@ -18,10 +18,10 @@ use crate::token::TokenKind;
 /// Lines inside multi-line strings and markup tokens and whitespace-only lines (left to
 /// `Layout/TrailingWhitespace`) are not checked.
 ///
-/// The other indentation readers (`Layout/IndentationWidth`, `Layout/IndentationConsistency`
-/// and the blank-line readers' re-indentation) measure space indentation only and skip lines
-/// indented with tabs, and `Layout/LineLength` does not break such lines; with `tabs` they
-/// check a file only until it has been converted.
+/// `Layout/IndentationWidth` and `Layout/IndentationConsistency` measure a tab as reaching the
+/// next multiple of their own width option and re-indent with spaces, which this reader then
+/// turns into tabs; keep those widths equal to `IndentationWidth` when using tabs.
+/// `Layout/LineLength` does not break lines indented with tabs.
 pub struct IndentationStyle;
 
 impl Reader for IndentationStyle {
@@ -265,7 +265,7 @@ mod convergence {
         );
         assert_eq!(
             corrected,
-            "local function f(a)\n\t\tif a then\n\t\t\treturn {\n\t\t\t\tx = 1\n\t\t\t}\n\t\tend\n\tend\n\nreturn f\n"
+            "local function f(a)\n\tif a then\n\t\treturn {\n\t\t\tx = 1\n\t\t}\n\tend\nend\n\nreturn f\n"
         );
         let tabbed = "local function f(a)\n\tif a then\n\t\tx()\n\tend\nend\n\nreturn f\n";
         assert_eq!(converge(Path::new("t.lua"), tabbed, &config), tabbed);
