@@ -24,3 +24,6 @@ Lint/ShadowedLibrary:
   Libraries: ['table', 'string', 'math', 'util', 'net', 'hook', 'timer', 'render', 'surface',
               'draw', 'ents', 'game', 'engine', 'input', 'gui', 'vgui', 'http', 'os', 'debug',
               'bit']
+
+Naming/FieldName:
+  Enabled: false                           # field names follow no single convention here

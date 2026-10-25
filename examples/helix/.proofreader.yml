@@ -64,3 +64,6 @@ Naming/MethodName:
 
 Lint/UnusedVariable:
   AllowUnusedParameters: true
+
+Naming/FieldName:
+  Enabled: false                           # field names follow no single convention here

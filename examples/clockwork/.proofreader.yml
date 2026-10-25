@@ -2,6 +2,7 @@
 #
 # - tab indentation, a tab 4 columns wide, lines of at most 120 characters
 # - PascalCase function and method names (local functions too), lowerCamelCase variables
+# - {a, b, c} without spaces inside braces
 # - every statement ending a line ends with `;`, including the `end` of blocks and functions
 #   (`end;`, `end);`); lines ending in `then`, `do`, `else` or a function header take none
 # - everything else as in the Flux style (see ../flux/.proofreader.yml)
@@ -20,6 +21,9 @@ Layout/LineLength:
   Max: 120
   IndentationWidth: 4
 
+Layout/SpaceInsideBraces:
+  EnforcedStyle: no_space                  # {a, b, c}
+
 Naming/MethodName:
   EnforcedStyle: PascalCase
 
@@ -28,3 +32,6 @@ Naming/VariableName:
 
 Style/Semicolon:
   EnforcedStyle: require
+
+Naming/FieldName:
+  Enabled: false                           # field names follow no single convention here

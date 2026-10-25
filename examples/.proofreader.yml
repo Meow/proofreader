@@ -282,6 +282,22 @@ Lint/UnusedVariable:
   AutoCorrect: true
   AllowUnusedParameters: false
 
+# Checks that class and module names use PascalCase.
+Naming/ClassName:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  Functions: ['class', 'mod', 'extends']
+
+# Checks that the table fields the code defines follow the configured naming style.
+Naming/FieldName:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: snake_case
+  AllowedNames: ['m_*', 'col[A-Z]*', 'tex[A-Z]*', 'onSuccess', 'onError', 'onAborted', 'onData',
+                 'onConnected', 'onConnectionFailed']
+
 # Checks that defined functions and methods follow the configured naming style.
 Naming/MethodName:
   Enabled: true
@@ -290,7 +306,7 @@ Naming/MethodName:
   EnforcedStyle: snake_case
   LocalFunctionStyle: same
 
-# Checks that local variables and parameters follow the configured naming style.
+# Checks that variables and parameters follow the configured naming style.
 Naming/VariableName:
   Enabled: true
   Severity: convention

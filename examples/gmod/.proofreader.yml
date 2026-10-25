@@ -57,3 +57,6 @@ Naming/VariableName:
 
 Naming/MethodName:
   EnforcedStyle: PascalCase
+
+Naming/FieldName:
+  Enabled: false                           # field names follow no single convention here

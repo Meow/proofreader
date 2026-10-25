@@ -3,8 +3,10 @@
 use yaml_rust2::Yaml;
 
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::lint::scopes::resolve;
 use crate::readers::naming::case::NamingStyle;
 use crate::readers::naming::declarations::{DeclarationKind, declarations};
+use crate::token::TokenKind;
 
 /// Checks the names of local variables, loop variables and parameters against `EnforcedStyle`.
 ///
@@ -12,7 +14,9 @@ use crate::readers::naming::declarations::{DeclarationKind, declarations};
 /// SCREAMING_SNAKE_CASE and ConstantStyle are allowed. With `camelCase` snake_case names are
 /// flagged instead, and with `PascalCase` every name starting with a lowercase letter. Single
 /// lowercase words (`ply`) suit `snake_case` and `camelCase`, and SCREAMING_SNAKE_CASE constants
-/// suit every style. `local function` names are left to `Naming/MethodName`.
+/// suit every style. Global variables are checked where they are assigned (`maxPlayers = 4`);
+/// `local function` names and global `function name()` definitions are left to
+/// `Naming/MethodName`.
 pub struct VariableName;
 
 impl Reader for VariableName {
@@ -21,7 +25,7 @@ impl Reader for VariableName {
     }
 
     fn description(&self) -> &'static str {
-        "Checks that local variables and parameters follow the configured naming style."
+        "Checks that variables and parameters follow the configured naming style."
     }
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
@@ -38,6 +42,29 @@ impl Reader for VariableName {
             {
                 ctx.add_offense(declaration.token.range(), message.clone());
             }
+        }
+        let Some(resolution) = resolve(source) else {
+            return;
+        };
+        let mut globals: Vec<_> = resolution
+            .references
+            .iter()
+            .filter(|reference| reference.write && reference.variable.is_none())
+            .map(|reference| reference.token)
+            .filter(|token| {
+                let index = source
+                    .code_token_indexes()
+                    .partition_point(|&position| source.tokens[position].start < token.start);
+                source
+                    .prev_code(index)
+                    .is_none_or(|previous| previous.kind != TokenKind::Function)
+            })
+            .filter(|token| style.rejects(source.text_of(token)))
+            .collect();
+        globals.sort_by_key(|token| token.start);
+        globals.dedup();
+        for token in globals {
+            ctx.add_offense(token.range(), message.clone());
         }
     }
 }
@@ -88,8 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn ignores_fields_globals_and_strings() {
-        expect_no_offenses(READER, "self.fooBar = 1\nfooBar = 2\nlocal s = 'fooBar'\n");
+    fn ignores_fields_and_strings() {
+        expect_no_offenses(READER, "self.fooBar = 1\nlocal s = 'fooBar'\n");
         expect_no_offenses(READER, "function obj:doThing(x) end\n-- local fooBar\n");
     }
 
@@ -127,6 +154,19 @@ mod tests {
         assert_eq!(
             inspect_with(READER, "local x\n", "EnforcedStyle: PascalCase")[0].message,
             "Use PascalCase for variable names."
+        );
+    }
+
+    #[test]
+    fn checks_assigned_globals() {
+        expect_offenses(
+            READER,
+            "maxPlayers = 4\nlocal localName = 1\nlocalName = 2\nfunction doThing() end\nprint(readOnly)\n",
+            &[(1, 1, MESSAGE), (2, 7, MESSAGE)],
+        );
+        expect_no_offenses(
+            READER,
+            "max_players = 4\nGAMEMODE = GM\nFile = File or {}\n",
         );
     }
 

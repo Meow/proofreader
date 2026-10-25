@@ -152,7 +152,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (54 in total, 6 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (56 in total, 6 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -229,8 +229,10 @@ configuration of the matching readers as YAML, which is a good starting point fo
 
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
-| `Naming/MethodName` | Defined functions and methods (including `local function`, last name segment) follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (PascalCase allowed for GMod hooks), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. SCREAMING_SNAKE_CASE suits every style; Lua metamethods (`__index`, ...) are never flagged. `LocalFunctionStyle` gives `local function` names their own style. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`), `LocalFunctionStyle: same` (or one of the styles) |
-| `Naming/VariableName` | Locals, parameters and loop variables follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (SCREAMING_SNAKE_CASE and ConstantStyle allowed), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. Single lowercase words suit `snake_case` and `camelCase`. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`) |
+| `Naming/ClassName` | The class and module names given to `class 'Name'`, `mod 'Name'` and `extends 'Name'` (the `Functions`) are PascalCase in every `::` or `.` segment (`'Lumen::Compiler'`; acronyms such as `'MVC'` allowed). | convention | no | `Functions: [class, mod, extends]` |
+| `Naming/FieldName` | Fields the code defines (`self.max_size = 4`, `{ max_size = 4 }`) follow `EnforcedStyle`, judged like `Naming/VariableName`. Fields of tables named in capitals (`SKIN`, `ENT`, `TOOL`) and names matching `AllowedNames` (glob patterns) are exempt; functions defined with `function a.b()` are left to `Naming/MethodName`. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`), `AllowedNames: ['m_*', 'col[A-Z]*', 'tex[A-Z]*', onSuccess, onError, onAborted, onData, onConnected, onConnectionFailed]` (GMod member fields, Derma skin colours and textures, MySQLOO callbacks) |
+| `Naming/MethodName` | Defined functions and methods (including `local function`, last name segment) follow `EnforcedStyle`: `snake_case` flags lowerCamelCase, and PascalCase except where GMod or Lumen need it (methods such as hooks, functions of tables named in capitals like `TOOL.BuildCPanel`, functions of lowercase global libraries like `hook.Call`, global functions like `LerpColor`, Lumen components); `camelCase` flags snake_case; `PascalCase` flags names starting with a lowercase letter. SCREAMING_SNAKE_CASE suits every style; Lua metamethods (`__index`, ...) are never flagged. `LocalFunctionStyle` gives `local function` names their own style. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`), `LocalFunctionStyle: same` (or one of the styles) |
+| `Naming/VariableName` | Locals, parameters, loop variables and assigned globals follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (SCREAMING_SNAKE_CASE and ConstantStyle allowed), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. Single lowercase words suit `snake_case` and `camelCase`. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`) |
 
 ### Known setting conflict
 
@@ -297,7 +299,10 @@ The defaults encode the style of the Flux framework:
 - `'a'..b..'c'`: no spaces around `..`, one space around every other binary operator and `=`.
 - `{ a = 1, 'x' }` with spaces inside non-empty braces and `{}` when empty; no spaces inside
   parentheses or brackets; one space after a comma and none before; no space before a call's `(`.
-- snake_case variables, functions and methods; ConstantStyle classes; GMod hooks keep PascalCase.
+- PascalCase class and module names (`class 'DateTime'`, `mod 'Lumen::Compiler'`); snake_case
+  variables, functions, methods and fields; no camelCase anywhere. PascalCase functions only where
+  GMod or Lumen need them: hooks, overrides of GMod library functions, GMod-style globals and Lumen
+  components.
 - Every function definition has a doc comment (`--- Summary.` followed by `-- @param` and
   `-- @return` lines).
 - A blank line before every multi-line block statement and after its `end` (unless next to
@@ -443,9 +448,9 @@ example plugin written in that style; copy a configuration to the root of a proj
 
 | Style | Configuration | What it looks like |
 |-------|---------------|--------------------|
-| Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, snake_case, doc comments, blank lines around blocks. |
+| Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, PascalCase classes and modules, snake_case everything else (no camelCase), doc comments, blank lines around blocks. |
 | Catwork | [`examples/catwork`](examples/catwork) | The Flux style with Clockwork naming: lowerCamelCase variables, PascalCase functions, no required doc comments. |
-| Clockwork | [`examples/clockwork`](examples/clockwork) | Tabs (4 columns), 120-character lines, PascalCase functions, lowerCamelCase variables, and `;` ending every statement that ends a line, `end;` included; otherwise the Flux style. |
+| Clockwork | [`examples/clockwork`](examples/clockwork) | Tabs (4 columns), 120-character lines, PascalCase functions, lowerCamelCase variables, `{a, b, c}`, and `;` ending every statement that ends a line, `end;` included; otherwise the Flux style. |
 | Vanilla GMod | [`examples/gmod`](examples/gmod) | The Lua shipped with the game: tabs, `print( "x" )`, `t[ k ]`, `if ( !IsValid( ply ) ) then`, `"a" .. b`, lowerCamelCase variables, PascalCase functions, no line limit or blank-line rules. |
 | Helix | [`examples/helix`](examples/helix) | Helix schemas and plugins: tabs, `if (condition) then`, `func(a, b)`, `{a = 1}`, `array[ other[index] ]`, `"a"..b`, `"double quotes"`, `and`/`or`, `!`, lowerCamelCase locals and local functions, UpperCamelCase functions, unused parameters allowed, no line limit or blank-line rules. |
 | C++ (Stroustrup) | [`examples/stroustrup`](examples/stroustrup) | 4 spaces, 80 columns, `//` and `/* */` comments, `&&`, `\|\|`, `!`, `!=`, `if (x > 0) then`, `"double quotes"`, `{1, 2}`, `f("x")`, snake_case. |

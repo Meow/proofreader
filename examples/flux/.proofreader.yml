@@ -6,7 +6,10 @@
 # - 2-space indentation, lines of at most 120 characters, LF line endings
 # - 'single quotes', `!`, `!=`, `and`/`or`, `--` comments, no semicolons
 # - 'a'..b..'c' without spaces around `..`, { a = 1 } with spaces inside braces, f(a) without
-# - snake_case variables and functions (PascalCase hooks allowed), doc comment on every function
+# - PascalCase class and module names (class 'DateTime', mod 'Lumen::Compiler'), snake_case
+#   variables, functions and fields, no camelCase anywhere; PascalCase functions only where GMod
+#   or Lumen need them (hooks, GMod library overrides, Lumen components)
+# - a doc comment on every function
 # - blank lines around multi-line blocks, after guard clauses and between definitions
 
 Layout/IndentationStyle:
@@ -63,3 +66,9 @@ Naming/VariableName:
 
 Naming/MethodName:
   EnforcedStyle: snake_case
+
+Naming/FieldName:
+  EnforcedStyle: snake_case
+
+Naming/ClassName:
+  Functions: ['class', 'mod', 'extends']

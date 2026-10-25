@@ -4,8 +4,8 @@
 
 local PLUGIN = {};
 local scores = {};
-local ranks = { 'Newcomer', 'Regular', 'Veteran' };
-local levels = { [0] = 1, [10] = 2, [100] = 3 };
+local ranks = {'Newcomer', 'Regular', 'Veteran'};
+local levels = {[0] = 1, [10] = 2, [100] = 3};
 
 --- Greets a player who joined and adds them to the scoreboard.
 -- @param actor [Player the player who joined]
@@ -20,7 +20,7 @@ function PLUGIN:PlayerInitialSpawn(actor)
 	end;
 
 	-- Remember the player for the scoreboard.
-	scores[actor:SteamID()] = { name = name, points = 0 };
+	scores[actor:SteamID()] = {name = name, points = 0};
 	actor:ChatPrint(message);
 end;
 

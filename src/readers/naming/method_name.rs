@@ -3,14 +3,21 @@
 use yaml_rust2::Yaml;
 
 use crate::reader::{Context, Reader, Registration};
-use crate::readers::naming::case::NamingStyle;
-use crate::readers::naming::declarations::function_definitions;
+use crate::readers::lint::scopes::{Resolution, resolve};
+use crate::readers::naming::case::{Case, NamingStyle, classify};
+use crate::readers::naming::declarations::{FunctionDefinition, function_definitions};
+use crate::source::Source;
 
 /// Checks the last name segment of function and method definitions (including
 /// `local function`) against `EnforcedStyle`.
 ///
-/// With `snake_case` (the default) lowerCamelCase names are flagged; PascalCase is allowed
-/// because GMod hooks (`PLUGIN:PlayerSpawn`) use it. With `camelCase` snake_case names are
+/// With `snake_case` (the default) lowerCamelCase names are flagged, and PascalCase names only
+/// where GMod and Lumen need them: methods (`PLUGIN:PlayerSpawn`, hooks are called by name),
+/// functions of tables named in capitals (`TOOL.BuildCPanel`), functions added to or replacing
+/// those of a lowercase global library (`function hook.Call()`, `function table.Merge()`), global
+/// functions in the style of the GMod API (`function LerpColor()`) and, in Lumen templates, local
+/// functions used as component tags (`<Icon />`); a PascalCase `local function` helper or
+/// `Config.GetThing` is flagged. With `camelCase` snake_case names are
 /// flagged instead, and with `PascalCase` (vanilla GMod and Clockwork) every name starting with
 /// a lowercase letter. SCREAMING_SNAKE_CASE names suit every style, and Lua's metamethod names
 /// (`__index`, `__tostring`, ...) are never flagged. `LocalFunctionStyle` gives `local function`
@@ -42,6 +49,7 @@ impl Reader for MethodName {
             other => (NamingStyle::from_option(other), "local function"),
         };
         let source = ctx.source;
+        let mut resolution = None;
         for definition in function_definitions(source) {
             let name = source.text_of(&definition.last);
             let (style, noun) = if definition.local {
@@ -49,7 +57,13 @@ impl Reader for MethodName {
             } else {
                 (style, "method")
             };
-            if !METAMETHODS.contains(&name) && style.rejects(name) {
+            if METAMETHODS.contains(&name) {
+                continue;
+            }
+            let pascal_not_allowed = style == NamingStyle::Snake
+                && classify(name) == Case::Pascal
+                && !pascal_allowed(source, &definition, &mut resolution);
+            if style.rejects(name) || pascal_not_allowed {
                 ctx.add_offense(
                     definition.last.range(),
                     format!("Use {} for {noun} names.", style.label()),
@@ -57,6 +71,51 @@ impl Reader for MethodName {
             }
         }
     }
+}
+
+/// Whether the PascalCase name of `definition` is one GMod or Lumen needs: a method, a function
+/// of a table named in capitals or of a lowercase global library, a global function or a Lumen
+/// component. `resolution` caches the scope resolution of `source`, computed when first needed.
+fn pascal_allowed<'a>(
+    source: &'a Source,
+    definition: &FunctionDefinition,
+    resolution: &mut Option<Option<Resolution<'a>>>,
+) -> bool {
+    if definition.name.contains(':') {
+        return true;
+    }
+    if !definition.local && !definition.name.contains('.') {
+        return true;
+    }
+    if let Some((owner, _)) = definition.name.split_once('.') {
+        let capitals = owner.chars().any(|c| c.is_ascii_uppercase())
+            && owner
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if capitals {
+            return true;
+        }
+        if !owner.starts_with(|c: char| c.is_ascii_lowercase()) {
+            return false;
+        }
+        let index = source
+            .code_token_indexes()
+            .partition_point(|&position| source.tokens[position].start <= definition.keyword.start);
+        let Some(owner_token) = source.code_token(index) else {
+            return false;
+        };
+        let resolved = resolution.get_or_insert_with(|| resolve(source));
+        return resolved.as_ref().is_some_and(|resolved| {
+            resolved
+                .reference_at(owner_token.start)
+                .is_some_and(|reference| reference.variable.is_none())
+        });
+    }
+    let name = source.text_of(&definition.last);
+    source
+        .component_references()
+        .iter()
+        .any(|(component, _)| *component == name)
 }
 
 /// The metamethod names Lua and LuaJIT look up, which keep their spelling in every style.
@@ -94,6 +153,57 @@ const METAMETHODS: &[&str] = &[
 ];
 
 inventory::submit! { Registration(|| Box::new(MethodName)) }
+
+#[cfg(test)]
+mod pascal_case_tests {
+    use crate::testing::*;
+
+    const READER: &str = "Naming/MethodName";
+    const MESSAGE: &str = "Use snake_case for method names.";
+
+    #[test]
+    fn pascal_case_only_where_gmod_or_lumen_need_it() {
+        expect_no_offenses(
+            READER,
+            "function PLUGIN:PlayerSpawn() end\nfunction TOOL.BuildCPanel() end\n\
+             function LerpColor() end\nfunction Config.get() end\nfunction hook.Call() end\n\
+             function table.Merge() end\n",
+        );
+        expect_offenses(
+            READER,
+            "local function CheckConditions() end\nfunction Config.GetColor() end\n\
+             local helpers = {}\nfunction helpers.DoThing() end\n",
+            &[(1, 16, MESSAGE), (2, 17, MESSAGE), (4, 18, MESSAGE)],
+        );
+    }
+
+    #[test]
+    fn lumen_components_may_be_pascal_case() {
+        expect_no_offenses_lumen(
+            READER,
+            "local function Icon(props)\n  return <text>{props.name}</text>\nend\n\nreturn <Icon name='x' />\n",
+        );
+        expect_offense_lumen(
+            READER,
+            "local function Helper() end\n\nreturn <view />\n",
+            1,
+            16,
+            MESSAGE,
+        );
+    }
+
+    #[test]
+    fn other_styles_keep_their_rules() {
+        assert!(
+            inspect_with(
+                READER,
+                "local function CheckConditions() end\n",
+                "EnforcedStyle: PascalCase"
+            )
+            .is_empty()
+        );
+    }
+}
 
 #[cfg(test)]
 mod local_function_style_tests {
