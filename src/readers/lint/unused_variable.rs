@@ -1,5 +1,7 @@
 //! `Lint/UnusedVariable`.
 
+use yaml_rust2::Yaml;
+
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::scopes::{Resolution, Variable, resolve};
@@ -18,7 +20,9 @@ const REMEDY: &str = "Remove it or prefix it with `_`.";
 /// with `_` (including `_` itself), `self` and `...` are exempt. Files that do not parse are
 /// skipped. The fix prefixes the name with `_` at the declaration, at every assignment and, for
 /// a parameter, in the matching `@param` tags of the doc comment right above its function; there
-/// is no fix when the prefixed name already appears in the variable's scope.
+/// is no fix when the prefixed name already appears in the variable's scope. With
+/// `AllowUnusedParameters`, parameters are never flagged (GMod hooks and callbacks receive
+/// arguments they often do not need).
 pub struct UnusedVariable;
 
 impl Reader for UnusedVariable {
@@ -30,7 +34,12 @@ impl Reader for UnusedVariable {
         "Checks for variables that are declared but never read."
     }
 
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("AllowUnusedParameters", Yaml::Boolean(false))]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
+        let allow_parameters = ctx.option_bool("AllowUnusedParameters", false);
         let source = ctx.source;
         let Some(resolution) = resolve(source) else {
             return;
@@ -40,6 +49,7 @@ impl Reader for UnusedVariable {
                 || variable.reads > 0
                 || variable.name.starts_with('_')
                 || variable.name == "self"
+                || (allow_parameters && variable.kind == DeclarationKind::Parameter)
             {
                 continue;
             }
@@ -117,6 +127,15 @@ mod tests {
 
     fn assigned(kind: &str, name: &str) -> String {
         format!("{kind} `{name}` is assigned but never used. Remove it or prefix it with `_`.")
+    }
+
+    #[test]
+    fn parameters_can_be_allowed() {
+        let src = "function M.f(a, b) local c return b end\n";
+        let offenses = inspect_with(READER, src, "AllowUnusedParameters: true");
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(offenses[0].message, unused("local variable", "c"));
+        assert_eq!(inspect(READER, src).len(), 2);
     }
 
     #[test]

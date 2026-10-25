@@ -4,6 +4,8 @@
 
 local PLUGIN = {}
 local scores = {}
+local ranks = { 'Newcomer', 'Regular', 'Veteran' }
+local levels = { [0] = 1, [10] = 2, [100] = 3 }
 
 --- Greets a player who joined and adds them to the scoreboard.
 -- @param actor [Player the player who joined]
@@ -36,6 +38,15 @@ function PLUGIN:AddPoints(actor, amount)
   entry.points = entry.points + amount
 
   return entry.points
+end
+
+--- Returns the title of the rank a player has reached.
+-- @param actor [Player the player]
+-- @return [String the rank title]
+function PLUGIN:GetRank(actor)
+  local entry = scores[actor:SteamID()]
+
+  return ranks[levels[entry.points]] or ranks[1]
 end
 
 return PLUGIN

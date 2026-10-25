@@ -1,0 +1,66 @@
+# Helix style: the code style of Helix schemas and plugins.
+#
+# - tab indentation, a tab 4 columns wide
+# - `and`/`or` rather than `&&`/`||`, `!` rather than `not`, `!=`
+# - parentheses around conditions without inner spaces: if (condition) then
+# - func(arg1, arg2) and {a = 1} without inner spaces; array[index], but spaces inside a
+#   bracket pair holding another one: array1[ array2[index] ]
+# - concatenation without spaces: like.."this".."."
+# - "double quotes" ('single' when the string contains "), [[ ]] for multi-line strings
+# - unused loop and return variables are named `_`; unused hook parameters are fine
+# - lowerCamelCase locals (local functions too), UpperCamelCase functions and methods,
+#   SCREAMING_SNAKE_CASE enums (PLUGIN.MAX_VAR)
+# - no variables named after libraries: `client` rather than `player`, `tbl` rather than `table`,
+#   `text` or `str` rather than `string`
+# - no line length limit, no doc comments required, no blank-line rules beyond "no two blank
+#   lines in a row"
+
+Layout/IndentationStyle:
+  EnforcedStyle: tabs
+  IndentationWidth: 4                      # how wide a tab is
+
+Layout/IndentationWidth:
+  Width: 4
+
+Layout/IndentationConsistency:
+  IndentationWidth: 4
+
+Layout/LineLength:
+  Enabled: false
+
+Layout/SpaceInsideBraces:
+  EnforcedStyle: no_space
+
+Layout/SpaceInsideBrackets:
+  EnforcedStyle: space_when_nested
+
+Layout/EmptyLineBeforeBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterBlock:
+  Enabled: false
+
+Layout/EmptyLineAfterGuardClause:
+  Enabled: false
+
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: false
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/ParenthesesAroundCondition:
+  EnforcedStyle: require
+
+Style/DocumentationMethod:
+  Enabled: false
+
+Naming/VariableName:
+  EnforcedStyle: camelCase
+
+Naming/MethodName:
+  EnforcedStyle: PascalCase
+  LocalFunctionStyle: camelCase
+
+Lint/UnusedVariable:
+  AllowUnusedParameters: true

@@ -12,7 +12,7 @@ use proofreader::runner::{Options, inspect_source};
 use proofreader::source::Source;
 
 /// The example styles, by directory name under `examples/`.
-const STYLES: [&str; 4] = ["flux", "catwork", "gmod", "stroustrup"];
+const STYLES: [&str; 5] = ["flux", "catwork", "gmod", "helix", "stroustrup"];
 
 /// The directory of the style `name`.
 fn style_dir(name: &str) -> PathBuf {

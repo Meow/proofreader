@@ -183,7 +183,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/SpaceBeforeComment` | A space between code and a trailing comment. | convention | yes | |
 | `Layout/SpaceBeforeParen` | No space between a function name and its `(`. | convention | yes | |
 | `Layout/SpaceInsideBraces` | `{ a = 1 }` with one space inside non-empty braces, `{}` when empty. | convention | yes | `EnforcedStyle: space` (or `no_space`) |
-| `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys; exactly one with `EnforcedStyle: space`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
+| `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys; exactly one with `EnforcedStyle: space`; with `space_when_nested`, exactly one inside a pair holding another pair (`a[ b[i] ]`) and none otherwise. | convention | yes | `EnforcedStyle: no_space` (or `space`, `space_when_nested`) |
 | `Layout/SpaceInsideParens` | No spaces inside `(` `)`; with `EnforcedStyle: space`, exactly one inside non-empty parentheses and none in `()`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
 | `Layout/TrailingEmptyLines` | Exactly one `\n` at the end of the file. | convention | yes | |
 | `Layout/TrailingWhitespace` | No trailing spaces or tabs (outside strings). | convention | yes | |
@@ -223,13 +223,13 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/UnknownDocTag` | Tags (`@name` starting the text of a `--` line comment) that are not in `KnownTags`. Disabled by default. | warning | no | `KnownTags` (EmmyLua/LuaLS, LDoc, GLuaLS and Flux tags; see `--show-readers Lint/UnknownDocTag`) |
 | `Lint/UnreachableCode` | Statements after one that always leaves the block: `break`, `continue`, `goto`, `return`, a call of a terminating function, a `do ... end` that always leaves, an `if` with an `else` whose every branch leaves. A `::label::` makes the code after it reachable again; each unreachable run is reported once. | warning | no | `TerminatingFunctions: [error]` |
 | `Lint/UnusedSelf` | Methods (`function a:b()`) that never read their implicit `self` and could be defined with `.`. Disabled by default: GMod hooks and scripted classes are methods by convention. | warning | no | |
-| `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix prefixes the name with `_` at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | |
+| `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix prefixes the name with `_` at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | `AllowUnusedParameters: false` (when `true`, parameters are never flagged) |
 
 ### Naming
 
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
-| `Naming/MethodName` | Defined functions and methods (including `local function`, last name segment) follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (PascalCase allowed for GMod hooks), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. SCREAMING_SNAKE_CASE suits every style; Lua metamethods (`__index`, ...) are never flagged. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`) |
+| `Naming/MethodName` | Defined functions and methods (including `local function`, last name segment) follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (PascalCase allowed for GMod hooks), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. SCREAMING_SNAKE_CASE suits every style; Lua metamethods (`__index`, ...) are never flagged. `LocalFunctionStyle` gives `local function` names their own style. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`), `LocalFunctionStyle: same` (or one of the styles) |
 | `Naming/VariableName` | Locals, parameters and loop variables follow `EnforcedStyle`: `snake_case` flags lowerCamelCase (SCREAMING_SNAKE_CASE and ConstantStyle allowed), `camelCase` flags snake_case, `PascalCase` flags names starting with a lowercase letter. Single lowercase words suit `snake_case` and `camelCase`. | convention | no | `EnforcedStyle: snake_case` (or `camelCase`, `PascalCase`) |
 
 ### Known setting conflict
@@ -446,6 +446,7 @@ example plugin written in that style; copy a configuration to the root of a proj
 | Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, snake_case, doc comments, blank lines around blocks. |
 | Catwork | [`examples/catwork`](examples/catwork) | The Flux style with Clockwork naming: lowerCamelCase variables, PascalCase functions, no required doc comments. |
 | Vanilla GMod | [`examples/gmod`](examples/gmod) | The Lua shipped with the game: tabs, `print( "x" )`, `t[ k ]`, `if ( !IsValid( ply ) ) then`, `"a" .. b`, lowerCamelCase variables, PascalCase functions, no line limit or blank-line rules. |
+| Helix | [`examples/helix`](examples/helix) | Helix schemas and plugins: tabs, `if (condition) then`, `func(a, b)`, `{a = 1}`, `array[ other[index] ]`, `"a"..b`, `"double quotes"`, `and`/`or`, `!`, lowerCamelCase locals and local functions, UpperCamelCase functions, unused parameters allowed, no line limit or blank-line rules. |
 | C++ (Stroustrup) | [`examples/stroustrup`](examples/stroustrup) | 4 spaces, 80 columns, `//` and `/* */` comments, `&&`, `\|\|`, `!`, `!=`, `if (x > 0) then`, `"double quotes"`, `{1, 2}`, `f("x")`, snake_case. |
 
 `cargo test --test examples` checks that every example is clean under its own style and that

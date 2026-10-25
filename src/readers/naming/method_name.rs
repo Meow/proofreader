@@ -13,7 +13,9 @@ use crate::readers::naming::declarations::function_definitions;
 /// because GMod hooks (`PLUGIN:PlayerSpawn`) use it. With `camelCase` snake_case names are
 /// flagged instead, and with `PascalCase` (vanilla GMod and Clockwork) every name starting with
 /// a lowercase letter. SCREAMING_SNAKE_CASE names suit every style, and Lua's metamethod names
-/// (`__index`, `__tostring`, ...) are never flagged.
+/// (`__index`, `__tostring`, ...) are never flagged. `LocalFunctionStyle` gives `local function`
+/// names a style of their own (the Helix style names them like local variables); with `same` (the
+/// default) they follow `EnforcedStyle`.
 pub struct MethodName;
 
 impl Reader for MethodName {
@@ -26,17 +28,32 @@ impl Reader for MethodName {
     }
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
-        vec![("EnforcedStyle", Yaml::String("snake_case".to_owned()))]
+        vec![
+            ("EnforcedStyle", Yaml::String("snake_case".to_owned())),
+            ("LocalFunctionStyle", Yaml::String("same".to_owned())),
+        ]
     }
 
     fn investigate(&self, ctx: &mut Context) {
-        let style = NamingStyle::from_option(ctx.option_str("EnforcedStyle", "snake_case"));
-        let message = format!("Use {} for method names.", style.label());
+        let enforced = ctx.option_str("EnforcedStyle", "snake_case");
+        let style = NamingStyle::from_option(enforced);
+        let (local_style, local_noun) = match ctx.option_str("LocalFunctionStyle", "same") {
+            "same" => (style, "method"),
+            other => (NamingStyle::from_option(other), "local function"),
+        };
         let source = ctx.source;
         for definition in function_definitions(source) {
             let name = source.text_of(&definition.last);
+            let (style, noun) = if definition.local {
+                (local_style, local_noun)
+            } else {
+                (style, "method")
+            };
             if !METAMETHODS.contains(&name) && style.rejects(name) {
-                ctx.add_offense(definition.last.range(), message.clone());
+                ctx.add_offense(
+                    definition.last.range(),
+                    format!("Use {} for {noun} names.", style.label()),
+                );
             }
         }
     }
@@ -77,6 +94,42 @@ const METAMETHODS: &[&str] = &[
 ];
 
 inventory::submit! { Registration(|| Box::new(MethodName)) }
+
+#[cfg(test)]
+mod local_function_style_tests {
+    use crate::testing::*;
+
+    const READER: &str = "Naming/MethodName";
+
+    #[test]
+    fn local_functions_can_have_their_own_style() {
+        let options = "EnforcedStyle: PascalCase\nLocalFunctionStyle: camelCase";
+        let offenses = inspect_with(
+            READER,
+            "local function doThing() end\nlocal function do_thing() end\n\
+             function PLUGIN:Think() end\nfunction PLUGIN:think() end\n",
+            options,
+        );
+        let found: Vec<(u32, &str)> = offenses
+            .iter()
+            .map(|offense| (offense.line, offense.message.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (2, "Use camelCase for local function names."),
+                (4, "Use PascalCase for method names.")
+            ]
+        );
+        let same = inspect_with(
+            READER,
+            "local function doThing() end\n",
+            "EnforcedStyle: PascalCase",
+        );
+        assert_eq!(same.len(), 1);
+        assert_eq!(same[0].message, "Use PascalCase for method names.");
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -280,6 +280,7 @@ Lint/UnusedVariable:
   Enabled: true
   Severity: warning
   AutoCorrect: true
+  AllowUnusedParameters: false
 
 # Checks that defined functions and methods follow the configured naming style.
 Naming/MethodName:
@@ -287,6 +288,7 @@ Naming/MethodName:
   Severity: convention
   AutoCorrect: true
   EnforcedStyle: snake_case
+  LocalFunctionStyle: same
 
 # Checks that local variables and parameters follow the configured naming style.
 Naming/VariableName:
