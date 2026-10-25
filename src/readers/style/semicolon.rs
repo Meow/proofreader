@@ -1,8 +1,13 @@
 //! `Style/Semicolon`.
 
+use yaml_rust2::Yaml;
+
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
-use crate::readers::lint::ast::{Expression, ExpressionKind, Visitor, parse, walk};
+use crate::readers::layout::block_structure::last_code_token_on_line;
+use crate::readers::lint::ast::{
+    Block, Expression, ExpressionKind, StatementKind, Visitor, parse, walk,
+};
 use crate::source::Source;
 use crate::token::TokenKind;
 
@@ -14,6 +19,14 @@ use crate::token::TokenKind;
 /// semicolon separating table fields becomes a comma. Table separators are found with the syntax
 /// tree, so a statement semicolon in a function inside a table stays a statement semicolon; in a
 /// file that does not parse, a semicolon directly inside braces is taken as a table separator.
+///
+/// With `EnforcedStyle: require` (the Clockwork style) every statement that ends a line must end
+/// with `;`: assignments, calls, `return`, `break` and the `end` (or `until ...`) closing a block
+/// statement, function definitions included (`end;`, `end);`). Lines ending in `then`, `do`,
+/// `else` or a function header end no statement and take none. A `;` may also end a statement in
+/// the middle of a line (`if x then return; end;`); any other statement semicolon (`then;`,
+/// `;;`) is flagged and removed. The fix inserts the missing `;` right after the statement,
+/// before a trailing comment. Files that do not parse are only checked for table separators.
 pub struct Semicolon;
 
 impl Reader for Semicolon {
@@ -22,12 +35,25 @@ impl Reader for Semicolon {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for semicolons."
+        "Checks for semicolons, or with `EnforcedStyle: require` for statements without one."
+    }
+
+    fn default_options(&self) -> Vec<(&'static str, Yaml)> {
+        vec![("EnforcedStyle", Yaml::String("omit".to_owned()))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let separators = table_separators(source);
+        let require = ctx.option_str("EnforcedStyle", "omit") == "require";
+        let terminators = if require {
+            match parse(source) {
+                Ok(block) => Some(check_required(ctx, source, &block)),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         let mut open = Vec::new();
         for (code_index, token) in source.code_tokens().enumerate() {
             match token.kind {
@@ -49,6 +75,19 @@ impl Reader for Semicolon {
                         vec![Edit::replace(token.range(), ",")],
                     );
                 }
+                TokenKind::Semicolon if require => {
+                    let Some(allowed) = &terminators else {
+                        continue;
+                    };
+                    if allowed.binary_search(&token.start).is_ok() {
+                        continue;
+                    }
+                    let index = source.code_token_indexes()[code_index];
+                    let offense = ctx.add_offense(token.range(), "Unnecessary semicolon.");
+                    if let Some(edit) = statement_fix(source, index) {
+                        offense.with_fix(vec![edit]);
+                    }
+                }
                 TokenKind::Semicolon => {
                     let index = source.code_token_indexes()[code_index];
                     let offense = ctx.add_offense(token.range(), "Do not use semicolons.");
@@ -60,6 +99,54 @@ impl Reader for Semicolon {
             }
         }
     }
+}
+
+/// Reports the statements of `block` (nested blocks included) that end a line without `;`, and
+/// returns the start offsets of the semicolons that end a statement, sorted.
+fn check_required(ctx: &mut Context, source: &Source, block: &Block) -> Vec<usize> {
+    struct Blocks<'t>(Vec<&'t Block>);
+    impl<'t> Visitor<'t> for Blocks<'t> {
+        fn enter_block(&mut self, block: &'t Block) {
+            self.0.push(block);
+        }
+    }
+    let mut blocks = Blocks(Vec::new());
+    walk(block, &mut blocks);
+    let mut terminators = Vec::new();
+    for block in blocks.0 {
+        let mut previous_ends_statement = false;
+        for (index, statement) in block.statements.iter().enumerate() {
+            if statement.kind == StatementKind::Empty {
+                if previous_ends_statement {
+                    terminators.push(statement.range.start);
+                }
+                previous_ends_statement = false;
+                continue;
+            }
+            previous_ends_statement = true;
+            let terminated = block
+                .statements
+                .get(index + 1)
+                .is_some_and(|next| next.kind == StatementKind::Empty);
+            if terminated {
+                continue;
+            }
+            let end = statement.range.end;
+            let (line, _) = source.position(end.saturating_sub(1));
+            if last_code_token_on_line(source, line).is_some_and(|last| last.end == end) {
+                let last = source
+                    .token_at(end.saturating_sub(1))
+                    .map_or(end.saturating_sub(1)..end, |token| token.range());
+                ctx.add_offense_with_fix(
+                    last,
+                    "Missing semicolon at the end of the statement.",
+                    vec![Edit::insert(end, ";")],
+                );
+            }
+        }
+    }
+    terminators.sort_unstable();
+    terminators
 }
 
 /// Start offsets of the `;` separating table fields, sorted, or `None` when the file does not
@@ -160,6 +247,46 @@ mod tests {
     #[test]
     fn falls_back_to_braces_when_the_file_does_not_parse() {
         expect_offense(READER, "t = { a = 1; b = 2 }\nif x\n", 1, 12, TABLE);
+    }
+
+    #[test]
+    fn require_style() {
+        let options = "EnforcedStyle: require";
+        let src = "local x = 1\nif x then\n  f(x) -- c\nend\n\nfunction A:B()\n  return x\nend\n\n\
+                   hook.Add('A', 'b', function()\n  g()\nend)\nt = {\n  a = 1\n}\n\
+                   if x then return end\nrepeat x = x - 1 until x\n";
+        assert_eq!(
+            autocorrect_with(READER, src, options),
+            "local x = 1;\nif x then\n  f(x); -- c\nend;\n\nfunction A:B()\n  return x;\nend;\n\n\
+             hook.Add('A', 'b', function()\n  g();\nend);\nt = {\n  a = 1\n};\n\
+             if x then return end;\nrepeat x = x - 1 until x;\n"
+        );
+        assert!(inspect_with(READER, "if x then return; end;\nf(); g();\n", options).is_empty());
+    }
+
+    #[test]
+    fn require_style_removes_stray_semicolons() {
+        let options = "EnforcedStyle: require";
+        let offenses = inspect_with(READER, "if x then; f(); end;\ng();;\n", options);
+        let found: Vec<(u32, u32, &str)> = offenses
+            .iter()
+            .map(|offense| (offense.line, offense.col, offense.message.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (1, 10, "Unnecessary semicolon."),
+                (2, 5, "Unnecessary semicolon.")
+            ]
+        );
+        assert_eq!(
+            autocorrect_with(
+                READER,
+                "if x then; f(); end;\ng();;\nt = { a = 1; b = 2 };\n",
+                options
+            ),
+            "if x then f(); end;\ng();\nt = { a = 1, b = 2 };\n"
+        );
     }
 
     #[test]

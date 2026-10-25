@@ -1,0 +1,30 @@
+# Clockwork style.
+#
+# - tab indentation, a tab 4 columns wide, lines of at most 120 characters
+# - PascalCase function and method names (local functions too), lowerCamelCase variables
+# - every statement ending a line ends with `;`, including the `end` of blocks and functions
+#   (`end;`, `end);`); lines ending in `then`, `do`, `else` or a function header take none
+# - everything else as in the Flux style (see ../flux/.proofreader.yml)
+
+Layout/IndentationStyle:
+  EnforcedStyle: tabs
+  IndentationWidth: 4                      # how wide a tab is
+
+Layout/IndentationWidth:
+  Width: 4
+
+Layout/IndentationConsistency:
+  IndentationWidth: 4
+
+Layout/LineLength:
+  Max: 120
+  IndentationWidth: 4
+
+Naming/MethodName:
+  EnforcedStyle: PascalCase
+
+Naming/VariableName:
+  EnforcedStyle: camelCase
+
+Style/Semicolon:
+  EnforcedStyle: require

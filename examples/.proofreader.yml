@@ -366,11 +366,12 @@ Style/PreferredLocalAlias:
   Severity: convention
   AutoCorrect: true
 
-# Checks for semicolons.
+# Checks for semicolons, or with `EnforcedStyle: require` for statements without one.
 Style/Semicolon:
   Enabled: true
   Severity: convention
   AutoCorrect: true
+  EnforcedStyle: omit
 
 # Checks that string literals use the configured quotes.
 Style/StringLiterals:
