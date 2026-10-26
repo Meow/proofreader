@@ -152,7 +152,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (56 in total, 6 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (58 in total, 6 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -224,6 +224,13 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/UnreachableCode` | Statements after one that always leaves the block: `break`, `continue`, `goto`, `return`, a call of a terminating function, a `do ... end` that always leaves, an `if` with an `else` whose every branch leaves. A `::label::` makes the code after it reachable again; each unreachable run is reported once. | warning | no | `TerminatingFunctions: [error]` |
 | `Lint/UnusedSelf` | Methods (`function a:b()`) that never read their implicit `self` and could be defined with `.`. Disabled by default: GMod hooks and scripted classes are methods by convention. | warning | no | |
 | `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix prefixes the name with `_` at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | `AllowUnusedParameters: false` (when `true`, parameters are never flagged) |
+
+### Performance
+
+| Reader | Checks | Severity | Fix | Options (defaults) |
+|--------|--------|----------|-----|--------------------|
+| `Performance/ConstantObjectInHotPath` | Calls of the constructors in `Functions` with only constant arguments (`Color(0, 0, 0, 200)`, `Vector(0, 0, 1)`; literals, parentheses and operators over literals) inside a hot path, which build the same object every frame or tick; a local outside the hot path could hold it. Calls without arguments are exempt. Hot paths are found as for `Performance/ExpensiveCallInHotPath`. Files that do not parse are skipped. | warning | no | `HotPaths`, `HookFunctions` (as below), `Functions: [Color, Vector, Angle]` |
+| `Performance/ExpensiveCallInHotPath` | Calls of expensive functions inside a hot path: a function defined under one of the `HotPaths` names as a method or field (`function GM:Think()`, `function PANEL:Paint(w, h)`, `ENT.Draw = function(self)`, `{ Think = function() end }`) or registered for one of them through a `HookFunctions` call (`hook.Add('HUDPaint', 'id', handler)`; a handler naming a function defined in the file counts), functions nested in a hot path included. The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of `Alternatives`, minus `SafeFunctions`; a call of a function with an `Alternatives` entry recommends that alternative (`Alternatives: { Material: util.get_material }`), any other suggests moving the call out of the hot path. Files that do not parse are skipped. | warning | no | `HotPaths` (hooks and methods that run every frame or tick: `Think`, `Tick`, `HUDPaint`, `Paint`, `Draw`, `CalcView`, `Move`, the `PreDraw*`/`PostDraw*` hooks, ...; see `--show-readers Performance`), `HookFunctions: [hook.Add]`, `UnsafeFunctions: [player.GetAll, ents.GetAll, file.Append, file.CreateDir, file.Delete, file.Exists, file.Find, file.IsDir, file.Open, file.Read, file.Rename, file.Size, file.Time, file.Write, CompileString, RunString, RunStringEx, table.HasValue, surface.CreateFont, surface.GetTextureID, Material, vgui.Create]`, `ExtraUnsafeFunctions: []`, `SafeFunctions: []`, `Alternatives: {}` |
 
 ### Naming
 
@@ -312,6 +319,11 @@ The defaults encode the style of the Flux framework:
 - No parentheses around conditions, no trailing commas in tables, no semicolons.
 - Never name a variable after a GMod library (`player`, `file`, `table`, ...): use `actor`,
   `target`, `client`, `path`, `tbl` and the like.
+- Nothing expensive in a function that runs every frame or tick (`Think`, `HUDPaint`,
+  `PANEL:Paint`, ...): file access, `Material`, `surface.CreateFont`, `vgui.Create` and the like
+  run once outside it, and a `Color`, `Vector` or `Angle` built from constants lives in a local
+  outside it. Flux's `util.get_material` caches materials, so the Flux style recommends it over
+  `Material` there.
 - Statement groups may be indented one level deeper to show a scope, as long as the closing
   statement returns to the block's level:
 
@@ -337,6 +349,7 @@ Readers share a few helper modules, which are ordinary modules of their departme
 | `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions and Lumen markup, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
 | `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
+| `readers::performance::hot_paths` | `hot_calls(block, source, hot_paths, hook_functions)`: every call of a plain function inside a hot path of a parsed file, with the name of the hot path it is in, plus `DEFAULT_HOT_PATHS`, `DEFAULT_HOOK_FUNCTIONS` and `is_constant`. Used by the `Performance` readers. |
 | `readers::style::doc_comments` | The doc comment of every function of a parsed file (the `--` comment lines directly above its `function` keyword's line), its tags (`-- @param`, `---@param`) and documented parameter names with byte ranges, plus `comment_line`. Used by the documentation readers and `Lint/UnusedVariable`. |
 | `readers::style::quotes` | Converting string literals between single and double quotes. |
 
@@ -403,7 +416,7 @@ mod tests {
 }
 ```
 
-- `Reader::default_severity` is `Warning` for `Lint/*` and `Convention` otherwise; override it when needed.
+- `Reader::default_severity` is `Warning` for `Lint/*` and `Performance/*`, `Convention` otherwise; override it when needed.
 - `Reader::default_enabled` is `true`; return `false` for a reader that is too noisy for most code bases, so
   that it only runs with `Enabled: true` (or when named in `--only`). `--show-readers` marks such readers
   `(disabled)`.
@@ -448,7 +461,7 @@ example plugin written in that style; copy a configuration to the root of a proj
 
 | Style | Configuration | What it looks like |
 |-------|---------------|--------------------|
-| Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, PascalCase classes and modules, snake_case everything else (no camelCase), doc comments, blank lines around blocks. |
+| Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, PascalCase classes and modules, snake_case everything else (no camelCase), doc comments, blank lines around blocks, `util.get_material` recommended over `Material` in hot paths. |
 | Catwork | [`examples/catwork`](examples/catwork) | The Flux style with Clockwork naming: lowerCamelCase variables, PascalCase functions, no required doc comments. |
 | Clockwork | [`examples/clockwork`](examples/clockwork) | Tabs (4 columns), 120-character lines, PascalCase functions, lowerCamelCase variables, `{a, b, c}`, and `;` ending every statement that ends a line, `end;` included; otherwise the Flux style. |
 | Vanilla GMod | [`examples/gmod`](examples/gmod) | The Lua shipped with the game: tabs, `print( "x" )`, `t[ k ]`, `if ( !IsValid( ply ) ) then`, `"a" .. b`, lowerCamelCase variables, PascalCase functions, no line limit or blank-line rules. |

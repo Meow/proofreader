@@ -313,6 +313,63 @@ Naming/VariableName:
   AutoCorrect: true
   EnforcedStyle: snake_case
 
+# Checks for objects built from constants in functions that run every frame or tick.
+Performance/ConstantObjectInHotPath:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  HotPaths: ['CalcAbsolutePosition', 'CalcMainActivity', 'CalcVehicleView', 'CalcView',
+             'CalcViewModelView', 'CreateMove', 'Draw', 'DrawDeathNotice', 'DrawHUD',
+             'DrawMonitors', 'DrawOverlay', 'DrawPhysgunBeam', 'DrawTranslucent',
+             'DrawWeaponSelection', 'DrawWorldModel', 'DrawWorldModelTranslucent', 'FinishMove',
+             'GetMotionBlurValues', 'HUDAmmoPickedUp', 'HUDDrawPickupHistory', 'HUDDrawScoreBoard',
+             'HUDDrawTargetID', 'HUDItemPickedUp', 'HUDPaint', 'HUDPaintBackground',
+             'HUDShouldDraw', 'HUDWeaponPickedUp', 'Move', 'NeedsDepthPass', 'Paint', 'PaintOver',
+             'PhysicsSimulate', 'PhysicsUpdate', 'PlayerDeathThink', 'PlayerPostThink',
+             'PlayerTick', 'PostDraw2DSkyBox', 'PostDrawEffects', 'PostDrawHUD',
+             'PostDrawOpaqueRenderables', 'PostDrawPlayerHands', 'PostDrawSkyBox',
+             'PostDrawTranslucentRenderables', 'PostDrawViewModel', 'PostPlayerDraw', 'PostRender',
+             'PreDrawEffects', 'PreDrawHalos', 'PreDrawHUD', 'PreDrawOpaqueRenderables',
+             'PreDrawPlayerHands', 'PreDrawSkyBox', 'PreDrawTranslucentRenderables',
+             'PreDrawViewModel', 'PreDrawViewModels', 'PrePlayerDraw', 'PreRender', 'RenderScene',
+             'RenderScreenspaceEffects', 'SetupMove', 'SetupSkyboxFog', 'SetupWorldFog',
+             'ShouldDrawLocalPlayer', 'StartCommand', 'Think', 'Tick', 'UpdateAnimation',
+             'VehicleMove', 'ViewModelDrawn']
+  HookFunctions: ['hook.Add']
+  Functions: ['Color', 'Vector', 'Angle']
+
+# Checks for expensive calls in functions that run every frame or tick.
+Performance/ExpensiveCallInHotPath:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  HotPaths: ['CalcAbsolutePosition', 'CalcMainActivity', 'CalcVehicleView', 'CalcView',
+             'CalcViewModelView', 'CreateMove', 'Draw', 'DrawDeathNotice', 'DrawHUD',
+             'DrawMonitors', 'DrawOverlay', 'DrawPhysgunBeam', 'DrawTranslucent',
+             'DrawWeaponSelection', 'DrawWorldModel', 'DrawWorldModelTranslucent', 'FinishMove',
+             'GetMotionBlurValues', 'HUDAmmoPickedUp', 'HUDDrawPickupHistory', 'HUDDrawScoreBoard',
+             'HUDDrawTargetID', 'HUDItemPickedUp', 'HUDPaint', 'HUDPaintBackground',
+             'HUDShouldDraw', 'HUDWeaponPickedUp', 'Move', 'NeedsDepthPass', 'Paint', 'PaintOver',
+             'PhysicsSimulate', 'PhysicsUpdate', 'PlayerDeathThink', 'PlayerPostThink',
+             'PlayerTick', 'PostDraw2DSkyBox', 'PostDrawEffects', 'PostDrawHUD',
+             'PostDrawOpaqueRenderables', 'PostDrawPlayerHands', 'PostDrawSkyBox',
+             'PostDrawTranslucentRenderables', 'PostDrawViewModel', 'PostPlayerDraw', 'PostRender',
+             'PreDrawEffects', 'PreDrawHalos', 'PreDrawHUD', 'PreDrawOpaqueRenderables',
+             'PreDrawPlayerHands', 'PreDrawSkyBox', 'PreDrawTranslucentRenderables',
+             'PreDrawViewModel', 'PreDrawViewModels', 'PrePlayerDraw', 'PreRender', 'RenderScene',
+             'RenderScreenspaceEffects', 'SetupMove', 'SetupSkyboxFog', 'SetupWorldFog',
+             'ShouldDrawLocalPlayer', 'StartCommand', 'Think', 'Tick', 'UpdateAnimation',
+             'VehicleMove', 'ViewModelDrawn']
+  HookFunctions: ['hook.Add']
+  UnsafeFunctions: ['player.GetAll', 'ents.GetAll', 'file.Append', 'file.CreateDir', 'file.Delete',
+                    'file.Exists', 'file.Find', 'file.IsDir', 'file.Open', 'file.Read',
+                    'file.Rename', 'file.Size', 'file.Time', 'file.Write', 'CompileString',
+                    'RunString', 'RunStringEx', 'table.HasValue', 'surface.CreateFont',
+                    'surface.GetTextureID', 'Material', 'vgui.Create']
+  ExtraUnsafeFunctions: []
+  SafeFunctions: []
+  Alternatives: {}
+
 # Checks that logical operators are spelled `and`/`or` (or `&&`/`||`).
 Style/AndOr:
   Enabled: true

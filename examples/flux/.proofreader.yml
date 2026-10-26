@@ -11,6 +11,7 @@
 #   or Lumen need them (hooks, GMod library overrides, Lumen components)
 # - a doc comment on every function
 # - blank lines around multi-line blocks, after guard clauses and between definitions
+# - Flux's cached util.get_material instead of Material in functions that run every frame
 
 Layout/IndentationStyle:
   EnforcedStyle: spaces
@@ -72,3 +73,7 @@ Naming/FieldName:
 
 Naming/ClassName:
   Functions: ['class', 'mod', 'extends']
+
+Performance/ExpensiveCallInHotPath:
+  Alternatives:
+    Material: util.get_material

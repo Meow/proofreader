@@ -20,9 +20,10 @@ pub trait Reader: Sync + Send {
     /// A one-sentence description shown by `--show-readers`.
     fn description(&self) -> &'static str;
 
-    /// Severity used unless configured otherwise: `Warning` for `Lint/*`, `Convention` otherwise.
+    /// Severity used unless configured otherwise: `Warning` for `Lint/*` and `Performance/*`,
+    /// `Convention` otherwise.
     fn default_severity(&self) -> Severity {
-        if department(self.name()) == "Lint" {
+        if matches!(department(self.name()), "Lint" | "Performance") {
             Severity::Warning
         } else {
             Severity::Convention
@@ -143,6 +144,11 @@ impl<'a> Context<'a> {
     pub fn option_str_list(&self, key: &str, default: &[&str]) -> Vec<String> {
         self.config.get_str_list(key, default)
     }
+
+    /// Mapping option `key` of the running reader, as `(key, value)` pairs in order.
+    pub fn option_str_map(&self, key: &str) -> Vec<(String, String)> {
+        self.config.get_str_map(key)
+    }
 }
 
 /// Registers a reader; submit one per reader with `inventory::submit!`.
@@ -241,7 +247,7 @@ mod tests {
             let name = reader.name();
             let (department, short) = name.split_once('/').expect("Department/Name");
             assert!(
-                ["Layout", "Style", "Lint", "Naming"].contains(&department),
+                ["Layout", "Style", "Lint", "Naming", "Performance"].contains(&department),
                 "{name}"
             );
             assert!(

@@ -218,6 +218,18 @@ impl ReaderConfig {
         }
     }
 
+    /// `key` as a mapping of scalars to scalars, as `(key, value)` pairs in order; entries that
+    /// are not scalars are dropped, and a missing or non-mapping value is empty.
+    pub fn get_str_map(&self, key: &str) -> Vec<(String, String)> {
+        match self.get(key) {
+            Some(Yaml::Hash(entries)) => entries
+                .iter()
+                .filter_map(|(name, value)| Some((scalar_string(name)?, scalar_string(value)?)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The reader-level `Include` patterns.
     pub fn include(&self) -> &Patterns {
         &self.include
@@ -726,6 +738,7 @@ fn yaml_flow(value: &Yaml) -> String {
                 .collect();
             format!("[{}]", items.join(", "))
         }
+        Yaml::Hash(entries) if entries.is_empty() => "{}".to_owned(),
         Yaml::Hash(entries) => {
             let entries: Vec<String> = entries
                 .iter()
