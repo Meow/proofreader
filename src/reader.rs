@@ -156,6 +156,40 @@ pub struct Registration(pub fn() -> Box<dyn Reader>);
 
 inventory::collect!(Registration);
 
+/// The departments readers belong to; a configuration section named after a department applies
+/// to every reader of it.
+pub const DEPARTMENTS: [&str; 5] = ["Layout", "Lint", "Naming", "Performance", "Style"];
+
+/// Options every reader of a department reads from the department's section, with their
+/// defaults; submit one per department that has such options with `inventory::submit!`.
+pub struct SharedOptions {
+    /// The department.
+    pub department: &'static str,
+    /// The options and their defaults, in display order.
+    pub defaults: fn() -> Vec<(&'static str, Yaml)>,
+}
+
+inventory::collect!(SharedOptions);
+
+/// The shared options of `department` with their defaults, in display order.
+pub fn department_options(department: &str) -> Vec<(&'static str, Yaml)> {
+    inventory::iter::<SharedOptions>
+        .into_iter()
+        .filter(|shared| shared.department == department)
+        .flat_map(|shared| (shared.defaults)())
+        .collect()
+}
+
+/// A YAML list of strings, for option defaults.
+pub fn yaml_strings(items: &[&str]) -> Yaml {
+    Yaml::Array(
+        items
+            .iter()
+            .map(|item| Yaml::String((*item).to_owned()))
+            .collect(),
+    )
+}
+
 /// Returns the department of a reader name (`Layout` for `Layout/LineLength`).
 pub fn department(name: &str) -> &str {
     name.split_once('/')
@@ -246,10 +280,7 @@ mod tests {
         for reader in registry() {
             let name = reader.name();
             let (department, short) = name.split_once('/').expect("Department/Name");
-            assert!(
-                ["Layout", "Style", "Lint", "Naming", "Performance"].contains(&department),
-                "{name}"
-            );
+            assert!(DEPARTMENTS.contains(&department), "{name}");
             assert!(
                 short.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
                 "{name}"

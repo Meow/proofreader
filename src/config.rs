@@ -13,7 +13,7 @@ use yaml_rust2::yaml::Hash;
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::offense::Severity;
-use crate::reader::{Reader, reader_named, registry};
+use crate::reader::{DEPARTMENTS, Reader, department, department_options, reader_named, registry};
 
 /// File name of configuration files.
 pub const CONFIG_FILE_NAME: &str = ".proofreader.yml";
@@ -423,6 +423,7 @@ pub struct Config {
     severity: Option<Severity>,
     readers: BTreeMap<&'static str, ReaderConfig>,
     sections: BTreeMap<&'static str, Hash>,
+    departments: BTreeMap<&'static str, Hash>,
     warnings: Vec<String>,
     fallback: ReaderConfig,
 }
@@ -486,48 +487,100 @@ impl Config {
             "AllReaders.Exclude",
         );
         let severity = validator.severity(all.get(&key("Severity")), "AllReaders.Severity");
+        let mut departments = BTreeMap::new();
+        let mut shared_patterns = BTreeMap::new();
+        for name in DEPARTMENTS {
+            let mut shared = Hash::new();
+            for (option, value) in department_options(name) {
+                shared.insert(key(option), value);
+            }
+            if let Some(user) = layers.sections.get(name) {
+                for (option, value) in user {
+                    shared.replace(option.clone(), value.clone());
+                }
+            }
+            for option in ["Enabled", "AutoCorrect"] {
+                let before = validator.errors.len();
+                validator.boolean(shared.get(&key(option)), true, &format!("{name}.{option}"));
+                if validator.errors.len() > before {
+                    shared.remove(&key(option));
+                }
+            }
+            let before = validator.errors.len();
+            validator.severity(shared.get(&key("Severity")), &format!("{name}.Severity"));
+            if validator.errors.len() > before {
+                shared.remove(&key("Severity"));
+            }
+            let patterns = ["Include", "Exclude"].map(|option| {
+                validator.patterns(
+                    shared.get(&key(option)),
+                    &layers.base(name, option, base_dir),
+                    &[],
+                    &format!("{name}.{option}"),
+                )
+            });
+            shared_patterns.insert(name, patterns);
+            departments.insert(name, shared);
+        }
         let mut readers = BTreeMap::new();
         let mut sections = BTreeMap::new();
         for reader in registry() {
             let name = reader.name();
+            let user = layers.sections.get(name);
             let mut section = Hash::new();
             section.insert(key("Enabled"), Yaml::Boolean(reader.default_enabled()));
             section.insert(key("AutoCorrect"), Yaml::Boolean(true));
             for (option, value) in reader.default_options() {
                 section.insert(key(option), value);
             }
-            if let Some(user) = layers.sections.get(name) {
-                for (option, value) in user {
-                    section.replace(option.clone(), value.clone());
+            let mut effective = section.clone();
+            if let Some(shared) = departments.get(department(name)) {
+                for (option, value) in shared {
+                    if option.as_str() != Some("Include") && option.as_str() != Some("Exclude") {
+                        effective.replace(option.clone(), value.clone());
+                    }
                 }
             }
+            if let Some(user) = user {
+                for (option, value) in user {
+                    section.replace(option.clone(), value.clone());
+                    effective.replace(option.clone(), value.clone());
+                }
+            }
+            let [shared_include, shared_exclude] = shared_patterns
+                .get(department(name))
+                .cloned()
+                .unwrap_or_default();
+            let mut patterns = |option: &str, shared: Patterns| match user
+                .and_then(|user| user.get(&key(option)))
+            {
+                Some(value) => validator.patterns(
+                    Some(value),
+                    &layers.base(name, option, base_dir),
+                    &[],
+                    &format!("{name}.{option}"),
+                ),
+                None => shared,
+            };
+            let include = patterns("Include", shared_include);
+            let exclude = patterns("Exclude", shared_exclude);
             let config = ReaderConfig {
                 enabled: validator.boolean(
-                    section.get(&key("Enabled")),
+                    effective.get(&key("Enabled")),
                     reader.default_enabled(),
                     &format!("{name}.Enabled"),
                 ),
                 severity: validator
-                    .severity(section.get(&key("Severity")), &format!("{name}.Severity"))
+                    .severity(effective.get(&key("Severity")), &format!("{name}.Severity"))
                     .or(severity),
                 autocorrect: validator.boolean(
-                    section.get(&key("AutoCorrect")),
+                    effective.get(&key("AutoCorrect")),
                     true,
                     &format!("{name}.AutoCorrect"),
                 ),
-                include: validator.patterns(
-                    section.get(&key("Include")),
-                    &layers.base(name, "Include", base_dir),
-                    &[],
-                    &format!("{name}.Include"),
-                ),
-                exclude: validator.patterns(
-                    section.get(&key("Exclude")),
-                    &layers.base(name, "Exclude", base_dir),
-                    &[],
-                    &format!("{name}.Exclude"),
-                ),
-                options: Yaml::Hash(section.clone()),
+                include,
+                exclude,
+                options: Yaml::Hash(effective),
             };
             readers.insert(name, config);
             sections.insert(name, section);
@@ -535,7 +588,11 @@ impl Config {
         let warnings = layers
             .origins
             .iter()
-            .filter(|(name, _)| name.as_str() != ALL_READERS && reader_named(name).is_none())
+            .filter(|(name, _)| {
+                name.as_str() != ALL_READERS
+                    && !DEPARTMENTS.contains(&name.as_str())
+                    && reader_named(name).is_none()
+            })
             .map(|(name, origin)| {
                 format!(
                     "Warning: unrecognized reader {name} found in {}",
@@ -551,6 +608,7 @@ impl Config {
             severity,
             readers,
             sections,
+            departments,
             warnings,
             fallback: ReaderConfig::default(),
         };
@@ -594,25 +652,48 @@ impl Config {
         &self.warnings
     }
 
-    /// Renders the effective configuration of the readers `names` as YAML.
+    /// The section of `department`: its shared options and whatever else was configured for the
+    /// whole department, or nothing.
+    pub fn department_section(&self, department: &str) -> Option<&Hash> {
+        self.departments
+            .get(department)
+            .filter(|section| !section.is_empty())
+    }
+
+    /// Renders the effective configuration of the readers `names` as YAML, each preceded by the
+    /// section of its department when that section has settings.
     pub fn describe(&self, names: &[&str]) -> String {
-        let mut out = String::new();
-        for (index, name) in names.iter().enumerate() {
+        let mut blocks: Vec<String> = Vec::new();
+        let mut shown: Vec<&str> = Vec::new();
+        for name in names {
             let (Some(reader), Some(section)) = (reader_named(name), self.sections.get(name))
             else {
                 continue;
             };
-            if index > 0 {
-                out.push('\n');
+            let department = department(name);
+            if !shown.contains(&department) {
+                shown.push(department);
+                if let Some(shared) = self.department_section(department) {
+                    let mut block = format!("{department}:\n");
+                    for (option, value) in shared {
+                        let _ = writeln!(block, "  {}: {}", yaml_flow(option), yaml_flow(value));
+                    }
+                    blocks.push(block);
+                }
             }
-            let _ = writeln!(out, "{name}:");
-            let _ = writeln!(out, "  Description: {}", yaml_scalar(reader.description()));
-            let _ = writeln!(out, "  Enabled: {}", self.reader(name).enabled);
-            let _ = writeln!(out, "  Severity: {}", self.severity_of(reader));
-            let _ = writeln!(out, "  AutoCorrect: {}", self.reader(name).autocorrect);
+            let mut block = String::new();
+            let _ = writeln!(block, "{name}:");
+            let _ = writeln!(
+                block,
+                "  Description: {}",
+                yaml_scalar(reader.description())
+            );
+            let _ = writeln!(block, "  Enabled: {}", self.reader(name).enabled);
+            let _ = writeln!(block, "  Severity: {}", self.severity_of(reader));
+            let _ = writeln!(block, "  AutoCorrect: {}", self.reader(name).autocorrect);
             for option in ["Include", "Exclude"] {
                 if let Some(value) = section.get(&key(option)) {
-                    let _ = writeln!(out, "  {option}: {}", yaml_flow(value));
+                    let _ = writeln!(block, "  {option}: {}", yaml_flow(value));
                 }
             }
             for (option, value) in section {
@@ -620,16 +701,18 @@ impl Config {
                     continue;
                 };
                 if !STANDARD_KEYS.contains(&option) {
-                    let _ = writeln!(out, "  {option}: {}", yaml_flow(value));
+                    let _ = writeln!(block, "  {option}: {}", yaml_flow(value));
                 }
             }
+            blocks.push(block);
         }
-        out
+        blocks.join("\n")
     }
 }
 
 /// Every setting with its built-in default, as a commented `.proofreader.yml`: the `AllReaders`
-/// section, then each reader (with its description as a comment) in name order.
+/// section, then each reader (with its description as a comment) in name order, preceded by the
+/// section of its department when the department has shared options.
 /// `examples/.proofreader.yml` is this text.
 pub fn default_configuration() -> String {
     let config = Config::defaults(Path::new("."));
@@ -637,7 +720,10 @@ pub fn default_configuration() -> String {
         "# Every proofreader setting with its built-in default. Copy this file to the root of a GLua\n\
          # project as .proofreader.yml and change what you need; settings left at their default can\n\
          # be deleted. Every reader also accepts `Include` and `Exclude` (glob lists, empty by\n\
-         # default). `proofreader --show-readers <Reader>` prints the effective settings of a reader.\n\
+         # default), and a section named after a department (`Performance:`) sets `Enabled`,\n\
+         # `Severity`, `AutoCorrect`, `Include`, `Exclude` and the department's shared options for\n\
+         # every reader of it. `proofreader --show-readers <Reader>` prints the effective settings of\n\
+         # a reader.\n\
          \n\
          # inherit_from: ../.proofreader.yml       # a string or a list, relative to this file\n\
          \n\
@@ -646,11 +732,26 @@ pub fn default_configuration() -> String {
          Exclude: []\n  \
          # Severity: convention                  # overrides the default severity of every reader\n",
     );
+    let mut current = "";
     for reader in registry() {
         let name = reader.name();
         let Some(section) = config.sections.get(name) else {
             continue;
         };
+        if department(name) != current {
+            current = department(name);
+            if let Some(shared) = config.department_section(current) {
+                let _ = writeln!(out, "\n# Settings shared by every {current}/* reader.");
+                let _ = writeln!(out, "{current}:");
+                for (option, value) in shared {
+                    out.push_str(&wrapped(&format!(
+                        "  {}: {}",
+                        yaml_flow(option),
+                        yaml_flow(value)
+                    )));
+                }
+            }
+        }
         let _ = writeln!(out, "\n# {}", reader.description());
         let _ = writeln!(out, "{name}:");
         let _ = writeln!(out, "  Enabled: {}", config.reader(name).enabled);
@@ -1035,6 +1136,40 @@ mod tests {
         assert!(yaml.contains("  Max: 120\n"));
         let parsed = YamlLoader::load_from_str(&yaml).expect("valid YAML");
         assert_eq!(parsed[0]["Layout/LineLength"]["Max"].as_i64(), Some(120));
+    }
+
+    #[test]
+    fn department_sections_apply_to_every_reader_of_the_department() {
+        let config = Config::from_yaml_str(
+            "Performance:\n  Severity: info\n  HotPaths: [Burn]\n  Exclude: ['vendor/**']\n\
+             Performance/ConstantObjectInHotPath:\n  HotPaths: [Freeze]\n  Enabled: false\n",
+            Path::new("/p"),
+        )
+        .expect("valid");
+        assert!(config.warnings().is_empty());
+        let expensive = config.reader("Performance/ExpensiveCallInHotPath");
+        assert_eq!(expensive.severity, Some(Severity::Info));
+        assert_eq!(expensive.get_str_list("HotPaths", &[]), vec!["Burn"]);
+        assert_eq!(
+            expensive.get_str_list("HookFunctions", &[]),
+            vec!["hook.Add"]
+        );
+        assert!(!expensive.applies_to(Path::new("/p/vendor/a.lua")));
+        assert!(expensive.applies_to(Path::new("/p/lib/a.lua")));
+        assert!(expensive.enabled);
+        let constant = config.reader("Performance/ConstantObjectInHotPath");
+        assert_eq!(constant.get_str_list("HotPaths", &[]), vec!["Freeze"]);
+        assert!(!constant.enabled);
+        assert_eq!(constant.severity, Some(Severity::Info));
+        let yaml = config.describe(&["Performance/ExpensiveCallInHotPath"]);
+        assert!(yaml.starts_with("Performance:\n  HotPaths: ['Burn']\n"));
+        assert!(yaml.contains("\nPerformance/ExpensiveCallInHotPath:\n"));
+        assert!(!yaml.contains("Performance/ExpensiveCallInHotPath:\n  Description: 'Checks for expensive calls in functions that run every frame or tick.'\n  Enabled: true\n  Severity: info\n  AutoCorrect: true\n  HotPaths"));
+        let error = Config::from_yaml_str("Performance:\n  Enabled: maybe\n", Path::new("/p"))
+            .expect_err("invalid");
+        let message = error.to_string();
+        assert!(message.contains("Performance.Enabled must be true or false"));
+        assert!(!message.contains("Performance/"));
     }
 
     #[test]

@@ -2,11 +2,9 @@
 
 use yaml_rust2::Yaml;
 
-use crate::reader::{Context, Reader, Registration};
+use crate::reader::{Context, Reader, Registration, yaml_strings};
 use crate::readers::lint::ast::parse;
-use crate::readers::performance::hot_paths::{
-    DEFAULT_HOOK_FUNCTIONS, DEFAULT_HOT_PATHS, hot_calls, is_constant,
-};
+use crate::readers::performance::hot_paths::{configured_hot_calls, is_constant};
 
 /// The constructors whose result never changes when every argument is a constant.
 const DEFAULT_FUNCTIONS: &[&str] = &["Color", "Vector", "Angle"];
@@ -15,9 +13,10 @@ const DEFAULT_FUNCTIONS: &[&str] = &["Color", "Vector", "Angle"];
 const MAX_QUOTED_CALL: usize = 60;
 
 /// Flags constructors called with only constant arguments (`Color(255, 0, 0)`, `Vector(0, 0, 1)`)
-/// inside hot paths (see `Performance/ExpensiveCallInHotPath`), which build the same object every
-/// frame or tick when a local outside the hot path could hold it. `Functions` lists the
-/// constructors; a call without arguments is not flagged. Files that do not parse are skipped.
+/// inside hot paths (the department's `HotPaths` and `HookFunctions`; see
+/// `Performance/ExpensiveCallInHotPath`), which build the same object every frame or tick when a
+/// local outside the hot path could hold it. `Functions` lists the constructors; a call without
+/// arguments is not flagged. Files that do not parse are skipped.
 pub struct ConstantObjectInHotPath;
 
 impl Reader for ConstantObjectInHotPath {
@@ -30,11 +29,7 @@ impl Reader for ConstantObjectInHotPath {
     }
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
-        vec![
-            ("HotPaths", string_list(DEFAULT_HOT_PATHS)),
-            ("HookFunctions", string_list(DEFAULT_HOOK_FUNCTIONS)),
-            ("Functions", string_list(DEFAULT_FUNCTIONS)),
-        ]
+        vec![("Functions", yaml_strings(DEFAULT_FUNCTIONS))]
     }
 
     fn investigate(&self, ctx: &mut Context) {
@@ -42,10 +37,8 @@ impl Reader for ConstantObjectInHotPath {
         let Ok(block) = parse(source) else {
             return;
         };
-        let hot_paths = ctx.option_str_list("HotPaths", DEFAULT_HOT_PATHS);
-        let hook_functions = ctx.option_str_list("HookFunctions", DEFAULT_HOOK_FUNCTIONS);
         let functions = ctx.option_str_list("Functions", DEFAULT_FUNCTIONS);
-        for call in hot_calls(&block, source, &hot_paths, &hook_functions) {
+        for call in configured_hot_calls(ctx, &block) {
             if !functions.contains(&call.function)
                 || call.arguments.values.is_empty()
                 || !call.arguments.values.iter().all(is_constant)
@@ -67,16 +60,6 @@ impl Reader for ConstantObjectInHotPath {
             );
         }
     }
-}
-
-/// A YAML list of the strings.
-fn string_list(items: &[&str]) -> Yaml {
-    Yaml::Array(
-        items
-            .iter()
-            .map(|item| Yaml::String((*item).to_owned()))
-            .collect(),
-    )
 }
 
 inventory::submit! { Registration(|| Box::new(ConstantObjectInHotPath)) }

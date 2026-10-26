@@ -111,6 +111,10 @@ Layout/LineLength:
 
 - Merge order: built-in defaults, then the inherited files in order (each after its own `inherit_from`), then the
   file itself. Reader sections merge key by key; `Include` and `Exclude` lists replace earlier ones.
+- A section named after a department (`Performance:`) applies to every reader of it: its `Enabled`,
+  `Severity`, `AutoCorrect`, `Include` and `Exclude` are the defaults of those readers' own sections, and
+  it holds the options the department's readers share (the hot paths of `Performance`), which a reader's
+  own section may still override.
 - Patterns are relative to the directory of the file that declares them. `**` matches any number of directories,
   `*` and `?` never match `/`, and a pattern without wildcards also matches everything below that directory.
   Patterns starting with `**` match anywhere.
@@ -152,7 +156,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (58 in total, 6 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (59 in total, 6 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -227,10 +231,20 @@ configuration of the matching readers as YAML, which is a good starting point fo
 
 ### Performance
 
+The `Performance` section holds the settings its readers share: `HotPaths`, the hooks and the entity, weapon
+and panel methods that run every frame or tick (`Think`, `Tick`, `HUDPaint`, `Paint`, `Draw`, `CalcView`,
+`Move`, the `PreDraw*`/`PostDraw*` hooks, ...; `--show-readers Performance` lists them), and
+`HookFunctions: [hook.Add]`, the functions registering a handler as `f(event, identifier, handler)`. A hot
+path is a function defined under one of the `HotPaths` names as a method or field (`function GM:Think()`,
+`function PANEL:Paint(w, h)`, `ENT.Draw = function(self)`, `{ Think = function() end }`) or registered for
+one of them through a `HookFunctions` call (`hook.Add('HUDPaint', 'id', handler)`; a handler naming a function
+defined in the file counts); functions nested in a hot path are part of it.
+
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
-| `Performance/ConstantObjectInHotPath` | Calls of the constructors in `Functions` with only constant arguments (`Color(0, 0, 0, 200)`, `Vector(0, 0, 1)`; literals, parentheses and operators over literals) inside a hot path, which build the same object every frame or tick; a local outside the hot path could hold it. Calls without arguments are exempt. Hot paths are found as for `Performance/ExpensiveCallInHotPath`. Files that do not parse are skipped. | warning | no | `HotPaths`, `HookFunctions` (as below), `Functions: [Color, Vector, Angle]` |
-| `Performance/ExpensiveCallInHotPath` | Calls of expensive functions inside a hot path: a function defined under one of the `HotPaths` names as a method or field (`function GM:Think()`, `function PANEL:Paint(w, h)`, `ENT.Draw = function(self)`, `{ Think = function() end }`) or registered for one of them through a `HookFunctions` call (`hook.Add('HUDPaint', 'id', handler)`; a handler naming a function defined in the file counts), functions nested in a hot path included. The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of `Alternatives`, minus `SafeFunctions`; a call of a function with an `Alternatives` entry recommends that alternative (`Alternatives: { Material: util.get_material }`), any other suggests moving the call out of the hot path. Files that do not parse are skipped. | warning | no | `HotPaths` (hooks and methods that run every frame or tick: `Think`, `Tick`, `HUDPaint`, `Paint`, `Draw`, `CalcView`, `Move`, the `PreDraw*`/`PostDraw*` hooks, ...; see `--show-readers Performance`), `HookFunctions: [hook.Add]`, `UnsafeFunctions: [player.GetAll, ents.GetAll, file.Append, file.CreateDir, file.Delete, file.Exists, file.Find, file.IsDir, file.Open, file.Read, file.Rename, file.Size, file.Time, file.Write, CompileString, RunString, RunStringEx, table.HasValue, surface.CreateFont, surface.GetTextureID, Material, vgui.Create]`, `ExtraUnsafeFunctions: []`, `SafeFunctions: []`, `Alternatives: {}` |
+| `Performance/ConstantObjectInHotPath` | Calls of the constructors in `Functions` with only constant arguments (`Color(0, 0, 0, 200)`, `Vector(0, 0, 1)`; literals, parentheses and operators over literals) inside a hot path, which build the same object every frame or tick; a local outside the hot path could hold it. Calls without arguments are exempt. Files that do not parse are skipped. | warning | no | `Functions: [Color, Vector, Angle]` |
+| `Performance/DistanceComparison` | A call of one of the `Methods` (`pos:Distance(other) < 100`) or `Functions` (`math.sqrt(x) <= y`) standing as an operand of a comparison, where the square root is wasted: the squared method (`DistToSqr`) or the function's argument compared with the squared bound (`100 * 100`) gives the same answer. Files that do not parse are skipped. | warning | no | `Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }`, `Functions: [math.sqrt]` |
+| `Performance/ExpensiveCallInHotPath` | Calls of expensive functions inside a hot path. The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of `Alternatives`, minus `SafeFunctions`; a call of a function with an `Alternatives` entry recommends that alternative (`Alternatives: { Material: util.get_material }`), any other suggests moving the call out of the hot path. Files that do not parse are skipped. | warning | no | `UnsafeFunctions: [player.GetAll, ents.GetAll, file.Append, file.CreateDir, file.Delete, file.Exists, file.Find, file.IsDir, file.Open, file.Read, file.Rename, file.Size, file.Time, file.Write, CompileString, RunString, RunStringEx, table.HasValue, surface.CreateFont, surface.GetTextureID, Material, vgui.Create]`, `ExtraUnsafeFunctions: []`, `SafeFunctions: []`, `Alternatives: {}` |
 
 ### Naming
 
@@ -323,7 +337,8 @@ The defaults encode the style of the Flux framework:
   `PANEL:Paint`, ...): file access, `Material`, `surface.CreateFont`, `vgui.Create` and the like
   run once outside it, and a `Color`, `Vector` or `Angle` built from constants lives in a local
   outside it. Flux's `util.get_material` caches materials, so the Flux style recommends it over
-  `Material` there.
+  `Material` there. A distance or length that is only compared uses the squared form
+  (`pos:DistToSqr(other) < range * range`) and skips the square root.
 - Statement groups may be indented one level deeper to show a scope, as long as the closing
   statement returns to the block's level:
 
@@ -349,7 +364,7 @@ Readers share a few helper modules, which are ordinary modules of their departme
 | `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions and Lumen markup, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
 | `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
-| `readers::performance::hot_paths` | `hot_calls(block, source, hot_paths, hook_functions)`: every call of a plain function inside a hot path of a parsed file, with the name of the hot path it is in, plus `DEFAULT_HOT_PATHS`, `DEFAULT_HOOK_FUNCTIONS` and `is_constant`. Used by the `Performance` readers. |
+| `readers::performance::hot_paths` | `hot_calls(block, source, hot_paths, hook_functions)` and `configured_hot_calls(ctx, block)` (under the `HotPaths` and `HookFunctions` options of the `Performance` section, whose defaults it declares): every call of a plain function inside a hot path of a parsed file, with the name of the hot path it is in; plus `is_constant`. Used by the hot-path readers. |
 | `readers::style::doc_comments` | The doc comment of every function of a parsed file (the `--` comment lines directly above its `function` keyword's line), its tags (`-- @param`, `---@param`) and documented parameter names with byte ranges, plus `comment_line`. Used by the documentation readers and `Lint/UnusedVariable`. |
 | `readers::style::quotes` | Converting string literals between single and double quotes. |
 
@@ -421,14 +436,18 @@ mod tests {
   that it only runs with `Enabled: true` (or when named in `--only`). `--show-readers` marks such readers
   `(disabled)`.
 - `Reader::default_options` lists the reader's options with their defaults (`Yaml::Integer`, `Yaml::Boolean`,
-  `Yaml::String`, `Yaml::Array`); read them with `ctx.option_usize("Max", 120)` and friends.
+  `Yaml::String`, `Yaml::Array`, `Yaml::Hash`); read them with `ctx.option_usize("Max", 120)`,
+  `ctx.option_str_map("Alternatives")` and friends. Options shared by every reader of a department are
+  declared once with `inventory::submit! { SharedOptions { department: "Performance", defaults: || ... } }`
+  and read the same way: a reader sees its department's section under its own options.
 - `ctx.source` gives the text, the lines and every token (trivia included) with byte ranges and 1-based
   line/column positions, plus helpers such as `code_tokens`, `token_at`, `first_code_token_on_line`,
   `lines_inside_multiline_tokens`, `lines_inside_markup`, `opaque_lines` and `component_references`. In a
   Lumen template (`source.is_lumen()`) markup is `TokenKind::Markup`; see [Lumen templates](#lumen-templates).
 - A fix is a list of `Edit`s (`replace`, `remove`, `insert`) over byte ranges of the current text. Fixes that
   overlap an already accepted fix are retried in the next pass, so keep each fix minimal.
-- Test with `crate::testing`: `inspect`, `inspect_with` (options as YAML, e.g. `"Max: 80"`), `autocorrect`,
+- Test with `crate::testing`: `inspect`, `inspect_with` (options as YAML, e.g. `"Max: 80"`), `inspect_configured`
+  (a whole configuration file, for department sections), `autocorrect`,
   `expect_no_offenses`, `expect_offense`, `expect_offenses` and `expect_correction` (which also checks that the
   correction is idempotent). The `_lumen` variants (`inspect_lumen`, `expect_offense_lumen`, ...) inspect the
   snippet as a Lumen template.

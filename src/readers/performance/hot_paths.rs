@@ -5,10 +5,14 @@
 //! registered for a hot path hook (`hook.Add('HUDPaint', 'id', function() end)`, where the
 //! handler may also name a function defined elsewhere in the file). Functions defined inside a
 //! hot path are part of it.
+//!
+//! The hot path names and the hook registration functions are the `HotPaths` and
+//! `HookFunctions` options of the `Performance` department.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::reader::{Context, SharedOptions, yaml_strings};
 use crate::readers::lint::ast::{
     Arguments, Block, Expression, ExpressionKind, FieldKey, Function, Statement, StatementKind,
     Visitor, walk,
@@ -91,6 +95,24 @@ pub const DEFAULT_HOT_PATHS: &[&str] = &[
 
 /// The functions registering a hook handler, called as `f(event, identifier, handler)`.
 pub const DEFAULT_HOOK_FUNCTIONS: &[&str] = &["hook.Add"];
+
+inventory::submit! {
+    SharedOptions {
+        department: "Performance",
+        defaults: || vec![
+            ("HotPaths", yaml_strings(DEFAULT_HOT_PATHS)),
+            ("HookFunctions", yaml_strings(DEFAULT_HOOK_FUNCTIONS)),
+        ],
+    }
+}
+
+/// The calls inside the hot paths of `block` under the `HotPaths` and `HookFunctions` options
+/// of the running reader; see [`hot_calls`].
+pub fn configured_hot_calls<'t>(ctx: &Context, block: &'t Block) -> Vec<HotCall<'t>> {
+    let hot_paths = ctx.option_str_list("HotPaths", DEFAULT_HOT_PATHS);
+    let hook_functions = ctx.option_str_list("HookFunctions", DEFAULT_HOOK_FUNCTIONS);
+    hot_calls(block, ctx.source, &hot_paths, &hook_functions)
+}
 
 /// A call of a plain function made inside a hot path.
 #[derive(Debug, Clone, PartialEq)]

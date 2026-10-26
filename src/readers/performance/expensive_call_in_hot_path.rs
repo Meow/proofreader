@@ -3,11 +3,9 @@
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::reader::{Context, Reader, Registration};
+use crate::reader::{Context, Reader, Registration, yaml_strings};
 use crate::readers::lint::ast::parse;
-use crate::readers::performance::hot_paths::{
-    DEFAULT_HOOK_FUNCTIONS, DEFAULT_HOT_PATHS, hot_calls,
-};
+use crate::readers::performance::hot_paths::configured_hot_calls;
 
 /// The functions whose cost is too high for a function that runs every frame or tick: file
 /// access, compiling code, loading materials, textures and fonts, creating panels, and
@@ -38,9 +36,10 @@ const DEFAULT_UNSAFE_FUNCTIONS: &[&str] = &[
 ];
 
 /// Flags calls of expensive functions inside hot paths: hooks and entity, weapon and panel
-/// methods that run every frame or tick (`HotPaths`), whether defined as methods
-/// (`function GM:Think()`, `function PANEL:Paint(w, h)`), assigned to a field, written in a
-/// table constructor or registered through one of `HookFunctions` (`hook.Add('HUDPaint', ...)`).
+/// methods that run every frame or tick (the department's `HotPaths`), whether defined as
+/// methods (`function GM:Think()`, `function PANEL:Paint(w, h)`), assigned to a field, written
+/// in a table constructor or registered through one of the department's `HookFunctions`
+/// (`hook.Add('HUDPaint', ...)`).
 ///
 /// The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of
 /// `Alternatives`, minus `SafeFunctions`; a call of a function with an alternative recommends
@@ -58,9 +57,7 @@ impl Reader for ExpensiveCallInHotPath {
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
         vec![
-            ("HotPaths", string_list(DEFAULT_HOT_PATHS)),
-            ("HookFunctions", string_list(DEFAULT_HOOK_FUNCTIONS)),
-            ("UnsafeFunctions", string_list(DEFAULT_UNSAFE_FUNCTIONS)),
+            ("UnsafeFunctions", yaml_strings(DEFAULT_UNSAFE_FUNCTIONS)),
             ("ExtraUnsafeFunctions", Yaml::Array(Vec::new())),
             ("SafeFunctions", Yaml::Array(Vec::new())),
             ("Alternatives", Yaml::Hash(Hash::new())),
@@ -72,15 +69,13 @@ impl Reader for ExpensiveCallInHotPath {
         let Ok(block) = parse(source) else {
             return;
         };
-        let hot_paths = ctx.option_str_list("HotPaths", DEFAULT_HOT_PATHS);
-        let hook_functions = ctx.option_str_list("HookFunctions", DEFAULT_HOOK_FUNCTIONS);
         let alternatives = ctx.option_str_map("Alternatives");
         let safe = ctx.option_str_list("SafeFunctions", &[]);
         let mut unsafe_functions = ctx.option_str_list("UnsafeFunctions", DEFAULT_UNSAFE_FUNCTIONS);
         unsafe_functions.extend(ctx.option_str_list("ExtraUnsafeFunctions", &[]));
         unsafe_functions.extend(alternatives.iter().map(|(name, _)| name.clone()));
         unsafe_functions.retain(|name| !safe.contains(name));
-        for call in hot_calls(&block, source, &hot_paths, &hook_functions) {
+        for call in configured_hot_calls(ctx, &block) {
             if !unsafe_functions.contains(&call.function) {
                 continue;
             }
@@ -101,16 +96,6 @@ impl Reader for ExpensiveCallInHotPath {
             ctx.add_offense(call.range, message);
         }
     }
-}
-
-/// A YAML list of the strings.
-fn string_list(items: &[&str]) -> Yaml {
-    Yaml::Array(
-        items
-            .iter()
-            .map(|item| Yaml::String((*item).to_owned()))
-            .collect(),
-    )
 }
 
 inventory::submit! { Registration(|| Box::new(ExpensiveCallInHotPath)) }
@@ -215,6 +200,9 @@ mod tests {
             src,
             "HotPaths: [Burn, Tick]\nHookFunctions: [plugin.hook]",
         );
+        assert_eq!(offenses.len(), 2);
+        let config = "Performance:\n  HotPaths: [Burn, Tick]\n  HookFunctions: [plugin.hook]\n";
+        let offenses = inspect_configured(READER, src, config);
         assert_eq!(offenses.len(), 2);
     }
 }

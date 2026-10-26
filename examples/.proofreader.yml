@@ -1,7 +1,10 @@
 # Every proofreader setting with its built-in default. Copy this file to the root of a GLua
 # project as .proofreader.yml and change what you need; settings left at their default can
 # be deleted. Every reader also accepts `Include` and `Exclude` (glob lists, empty by
-# default). `proofreader --show-readers <Reader>` prints the effective settings of a reader.
+# default), and a section named after a department (`Performance:`) sets `Enabled`,
+# `Severity`, `AutoCorrect`, `Include`, `Exclude` and the department's shared options for
+# every reader of it. `proofreader --show-readers <Reader>` prints the effective settings of
+# a reader.
 
 # inherit_from: ../.proofreader.yml       # a string or a list, relative to this file
 
@@ -313,11 +316,8 @@ Naming/VariableName:
   AutoCorrect: true
   EnforcedStyle: snake_case
 
-# Checks for objects built from constants in functions that run every frame or tick.
-Performance/ConstantObjectInHotPath:
-  Enabled: true
-  Severity: warning
-  AutoCorrect: true
+# Settings shared by every Performance/* reader.
+Performance:
   HotPaths: ['CalcAbsolutePosition', 'CalcMainActivity', 'CalcVehicleView', 'CalcView',
              'CalcViewModelView', 'CreateMove', 'Draw', 'DrawDeathNotice', 'DrawHUD',
              'DrawMonitors', 'DrawOverlay', 'DrawPhysgunBeam', 'DrawTranslucent',
@@ -336,31 +336,27 @@ Performance/ConstantObjectInHotPath:
              'ShouldDrawLocalPlayer', 'StartCommand', 'Think', 'Tick', 'UpdateAnimation',
              'VehicleMove', 'ViewModelDrawn']
   HookFunctions: ['hook.Add']
+
+# Checks for objects built from constants in functions that run every frame or tick.
+Performance/ConstantObjectInHotPath:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
   Functions: ['Color', 'Vector', 'Angle']
+
+# Checks for distances and lengths that are only compared, where the squared value does.
+Performance/DistanceComparison:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }
+  Functions: ['math.sqrt']
 
 # Checks for expensive calls in functions that run every frame or tick.
 Performance/ExpensiveCallInHotPath:
   Enabled: true
   Severity: warning
   AutoCorrect: true
-  HotPaths: ['CalcAbsolutePosition', 'CalcMainActivity', 'CalcVehicleView', 'CalcView',
-             'CalcViewModelView', 'CreateMove', 'Draw', 'DrawDeathNotice', 'DrawHUD',
-             'DrawMonitors', 'DrawOverlay', 'DrawPhysgunBeam', 'DrawTranslucent',
-             'DrawWeaponSelection', 'DrawWorldModel', 'DrawWorldModelTranslucent', 'FinishMove',
-             'GetMotionBlurValues', 'HUDAmmoPickedUp', 'HUDDrawPickupHistory', 'HUDDrawScoreBoard',
-             'HUDDrawTargetID', 'HUDItemPickedUp', 'HUDPaint', 'HUDPaintBackground',
-             'HUDShouldDraw', 'HUDWeaponPickedUp', 'Move', 'NeedsDepthPass', 'Paint', 'PaintOver',
-             'PhysicsSimulate', 'PhysicsUpdate', 'PlayerDeathThink', 'PlayerPostThink',
-             'PlayerTick', 'PostDraw2DSkyBox', 'PostDrawEffects', 'PostDrawHUD',
-             'PostDrawOpaqueRenderables', 'PostDrawPlayerHands', 'PostDrawSkyBox',
-             'PostDrawTranslucentRenderables', 'PostDrawViewModel', 'PostPlayerDraw', 'PostRender',
-             'PreDrawEffects', 'PreDrawHalos', 'PreDrawHUD', 'PreDrawOpaqueRenderables',
-             'PreDrawPlayerHands', 'PreDrawSkyBox', 'PreDrawTranslucentRenderables',
-             'PreDrawViewModel', 'PreDrawViewModels', 'PrePlayerDraw', 'PreRender', 'RenderScene',
-             'RenderScreenspaceEffects', 'SetupMove', 'SetupSkyboxFog', 'SetupWorldFog',
-             'ShouldDrawLocalPlayer', 'StartCommand', 'Think', 'Tick', 'UpdateAnimation',
-             'VehicleMove', 'ViewModelDrawn']
-  HookFunctions: ['hook.Add']
   UnsafeFunctions: ['player.GetAll', 'ents.GetAll', 'file.Append', 'file.CreateDir', 'file.Delete',
                     'file.Exists', 'file.Find', 'file.IsDir', 'file.Open', 'file.Read',
                     'file.Rename', 'file.Size', 'file.Time', 'file.Write', 'CompileString',

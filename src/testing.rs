@@ -31,7 +31,12 @@ fn config_for(reader: &str, options_yaml: &str) -> Config {
             .collect();
         format!("{reader}:\n{indented}")
     };
-    match Config::from_yaml_str(&yaml, Path::new(".")) {
+    config_from(reader, &yaml)
+}
+
+/// The configuration `yaml` (a whole `.proofreader.yml`), which must be valid.
+fn config_from(reader: &str, yaml: &str) -> Config {
+    match Config::from_yaml_str(yaml, Path::new(".")) {
         Ok(config) => config,
         Err(error) => panic!("invalid options for {reader}: {error}"),
     }
@@ -53,12 +58,23 @@ fn run(
 ) -> (Vec<Offense>, Option<String>) {
     let name = registered(reader);
     let config = config_for(name, options_yaml);
+    run_with_config(path, name, src, &config, fix)
+}
+
+/// Runs only `reader` over `src` inspected as the file `path` under `config`.
+fn run_with_config(
+    path: &str,
+    name: &'static str,
+    src: &str,
+    config: &Config,
+    fix: bool,
+) -> (Vec<Offense>, Option<String>) {
     let options = Options {
         fix,
         filter: ReaderFilter::single(name),
         ..Options::default()
     };
-    let (offenses, corrected) = inspect_source(&Source::new(path, src), &config, &options);
+    let (offenses, corrected) = inspect_source(&Source::new(path, src), config, &options);
     if let Some(error) = offenses
         .iter()
         .find(|offense| offense.reader == READER_ERROR)
@@ -119,6 +135,14 @@ fn assert_correction(path: &str, reader: &str, src: &str, expected: &str) {
         corrected,
         "{reader} correction of {path} is not idempotent"
     );
+}
+
+/// Offenses `reader` reports for `src` under the whole configuration file `config_yaml`
+/// (for settings outside the reader's own section, such as a department section).
+pub fn inspect_configured(reader: &str, src: &str, config_yaml: &str) -> Vec<Offense> {
+    let name = registered(reader);
+    let config = config_from(name, config_yaml);
+    run_with_config(LUA, name, src, &config, false).0
 }
 
 /// Offenses `reader` reports for `src` with the default configuration.
