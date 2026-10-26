@@ -366,6 +366,13 @@ Performance/ExpensiveCallInHotPath:
   SafeFunctions: []
   Alternatives: {}
 
+# Checks for `type(x)` compared with a type name that a predicate such as `isnumber` tests directly.
+Performance/TypeComparison:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }
+
 # Checks that logical operators are spelled `and`/`or` (or `&&`/`||`).
 Style/AndOr:
   Enabled: true

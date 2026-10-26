@@ -156,7 +156,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (59 in total, 6 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (60 in total, 6 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -243,7 +243,8 @@ defined in the file counts); functions nested in a hot path are part of it.
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
 | `Performance/ConstantObjectInHotPath` | Calls of the constructors in `Functions` with only constant arguments (`Color(0, 0, 0, 200)`, `Vector(0, 0, 1)`; literals, parentheses and operators over literals) inside a hot path, which build the same object every frame or tick; a local outside the hot path could hold it. Calls without arguments are exempt. Files that do not parse are skipped. | warning | no | `Functions: [Color, Vector, Angle]` |
-| `Performance/DistanceComparison` | A call of one of the `Methods` (`pos:Distance(other) < 100`) or `Functions` (`math.sqrt(x) <= y`) standing as an operand of a comparison, where the square root is wasted: the squared method (`DistToSqr`) or the function's argument compared with the squared bound (`100 * 100`) gives the same answer. Files that do not parse are skipped. | warning | no | `Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }`, `Functions: [math.sqrt]` |
+| `Performance/DistanceComparison` | A call of one of the `Methods` (`pos:Distance(other) < 100`) or `Functions` (`math.sqrt(x) <= y`) standing as an operand of a comparison, where the square root is wasted: the squared method (`DistToSqr`) or the function's argument compared with the squared bound gives the same answer. A distance inside a larger expression (`a:Distance(b) + c:Distance(d) < 100`) is left alone. The fix squares the call and the bound: a numeric literal becomes its square (`== 100` to `== 10000`), a name or field is multiplied by itself (`range * range`), anything else is raised to the second power (`self:GetRange() ^ 2`, `(range + 1) ^ 2`); two compared square roots are squared together, and a negated literal bound is not corrected. Files that do not parse are skipped. | warning | yes | `Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }`, `Functions: [math.sqrt]` |
+| `Performance/TypeComparison` | `type(x) == 'number'` and `type(x) != 'number'` (either order, `~=` too) when `Predicates` maps the type name to a predicate that tests it directly, without building and comparing a string. The fix writes `isnumber(x)` or `not isnumber(x)`. | warning | yes | `Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }` |
 | `Performance/ExpensiveCallInHotPath` | Calls of expensive functions inside a hot path. The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of `Alternatives`, minus `SafeFunctions`; a call of a function with an `Alternatives` entry recommends that alternative (`Alternatives: { Material: util.get_material }`), any other suggests moving the call out of the hot path. Files that do not parse are skipped. | warning | no | `UnsafeFunctions: [player.GetAll, ents.GetAll, file.Append, file.CreateDir, file.Delete, file.Exists, file.Find, file.IsDir, file.Open, file.Read, file.Rename, file.Size, file.Time, file.Write, CompileString, RunString, RunStringEx, table.HasValue, surface.CreateFont, surface.GetTextureID, Material, vgui.Create]`, `ExtraUnsafeFunctions: []`, `SafeFunctions: []`, `Alternatives: {}` |
 
 ### Naming
@@ -338,7 +339,8 @@ The defaults encode the style of the Flux framework:
   run once outside it, and a `Color`, `Vector` or `Angle` built from constants lives in a local
   outside it. Flux's `util.get_material` caches materials, so the Flux style recommends it over
   `Material` there. A distance or length that is only compared uses the squared form
-  (`pos:DistToSqr(other) < range * range`) and skips the square root.
+  (`pos:DistToSqr(other) < range * range`) and skips the square root; a type test uses the
+  predicate (`isnumber(x)`, `istable(x)`) rather than comparing `type(x)` with a string.
 - Statement groups may be indented one level deeper to show a scope, as long as the closing
   statement returns to the block's level:
 
@@ -463,8 +465,10 @@ cargo test                                   # unit and integration tests
 cargo test -- --ignored                      # also run over the whole Flux corpus at /home/luna/code/flux-ce:
                                              # lexing, and checks that every correction (all readers together,
                                              # and the layout groups alone) keeps the code and is idempotent,
-                                             # and that Layout/LineLength alone only breaks lines, shortens
-                                             # them and adds no offenses of other readers; also
+                                             # that Layout/LineLength alone only breaks lines, shortens
+                                             # them and adds no offenses of other readers, that the readers
+                                             # rewriting code (Style/PreferredLocalAlias and the Performance
+                                             # comparison fixes) change only what they are for; also
                                              # that correcting its Lumen templates keeps their markup
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
