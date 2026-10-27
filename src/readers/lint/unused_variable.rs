@@ -26,11 +26,13 @@ use crate::token::Token;
 /// The fix removes an unused local together with every assignment to it: a statement declaring
 /// or assigning only that name is deleted (with its line when nothing else is on it, and with
 /// the doc comment of a removed function), and one declaring several names loses the name and
-/// its value. A value that may have side effects stays: `local x = f()` becomes `f()`, and other
-/// such values (`local x = f() + 1`) are not corrected. Parameters and loop variables cannot be
-/// removed, so their fix prefixes the name with `_` at the declaration, at every assignment and,
-/// for a parameter, in the matching `@param` tags of the doc comment right above its function;
-/// there is no fix when the prefixed name already appears in the variable's scope. With
+/// its value. Only values without side effects are removed (literals, names, fields, tables,
+/// functions and operators over those); a local whose declaration or assignments hold a call
+/// (`local margin = SScaleMin(20 / 3)`) is prefixed with `_` instead, like parameters and loop
+/// variables, which cannot be removed. Prefixing renames the variable at the declaration, at
+/// every assignment and, for a parameter, in the matching `@param` tags of the doc comment right
+/// above its function; there is no fix when the prefixed name already appears in the variable's
+/// scope. With
 /// `AllowUnusedParameters`, parameters are never flagged (GMod hooks and callbacks receive
 /// arguments they often do not need).
 pub struct UnusedVariable;
@@ -66,15 +68,14 @@ impl Reader for UnusedVariable {
                 continue;
             }
             let range = variable.token.range();
-            let message = message(variable);
-            let edits = match variable.kind {
+            let removed = match variable.kind {
                 DeclarationKind::Local | DeclarationKind::LocalFunction => {
                     removal(source, &bindings, variable)
                 }
-                DeclarationKind::Parameter | DeclarationKind::ForVariable => {
-                    prefixing(source, &resolution, variable)
-                }
+                DeclarationKind::Parameter | DeclarationKind::ForVariable => None,
             };
+            let message = message(variable, removed.is_some());
+            let edits = removed.or_else(|| prefixing(source, &resolution, variable));
             match edits {
                 Some(edits) => ctx.add_offense_with_fix(range, message, edits),
                 None => ctx.add_offense(range, message),
@@ -83,13 +84,19 @@ impl Reader for UnusedVariable {
     }
 }
 
-/// The offense message for the unread `variable`.
-fn message(variable: &Variable) -> String {
-    let (noun, capitalized, remedy) = match variable.kind {
-        DeclarationKind::Local => ("local variable", "Local variable", "Remove it."),
-        DeclarationKind::LocalFunction => ("local function", "Local function", "Remove it."),
-        DeclarationKind::Parameter => ("parameter", "Parameter", PREFIX_REMEDY),
-        DeclarationKind::ForVariable => ("loop variable", "Loop variable", PREFIX_REMEDY),
+/// The offense message for the unread `variable`; `removable` when the fix removes it rather
+/// than prefixing it.
+fn message(variable: &Variable, removable: bool) -> String {
+    let (noun, capitalized) = match variable.kind {
+        DeclarationKind::Local => ("local variable", "Local variable"),
+        DeclarationKind::LocalFunction => ("local function", "Local function"),
+        DeclarationKind::Parameter => ("parameter", "Parameter"),
+        DeclarationKind::ForVariable => ("loop variable", "Loop variable"),
+    };
+    let remedy = if removable {
+        "Remove it."
+    } else {
+        "Remove it or prefix it with `_`."
     };
     let name = &variable.name;
     if variable.writes.is_empty() {
@@ -98,9 +105,6 @@ fn message(variable: &Variable) -> String {
         format!("{capitalized} `{name}` is assigned but never used. {remedy}")
     }
 }
-
-/// What the messages for parameters and loop variables tell the user to do.
-const PREFIX_REMEDY: &str = "Remove it or prefix it with `_`.";
 
 /// A statement binding a name, keyed in [`bindings`] by the offset of that name's token.
 #[derive(Clone, Copy)]
@@ -194,18 +198,10 @@ fn unbind(source: &Source, binding: Binding) -> Option<Vec<Edit>> {
                 Some(&function.keyword),
             )]);
         }
-        if values.iter().all(droppable) {
-            return Some(vec![remove_statement(source, statement, None)]);
-        }
-        // Keep a call for its side effects; a statement starting with `(` could continue the
-        // previous one.
-        if let [value] = values
-            && value.is_call()
-            && !source.text[value.range.clone()].starts_with('(')
-        {
-            return Some(vec![Edit::remove(statement.range.start..value.range.start)]);
-        }
-        return None;
+        return values
+            .iter()
+            .all(droppable)
+            .then(|| vec![remove_statement(source, statement, None)]);
     }
     let index = binding.index;
     let mut edits = vec![Edit::remove(list_item(&names, index))];
@@ -375,6 +371,11 @@ mod tests {
             "{kind} `{name}` is assigned but never used. {}",
             remedy(kind)
         )
+    }
+
+    /// The message for a local the fix prefixes with `_` rather than removes.
+    fn prefixed(message: &str) -> String {
+        message.replace("Remove it.", "Remove it or prefix it with `_`.")
     }
 
     #[test]
@@ -566,7 +567,7 @@ mod tests {
             "repeat local done = step() until x\n",
             1,
             14,
-            &unused("local variable", "done"),
+            &prefixed(&unused("local variable", "done")),
         );
     }
 
@@ -651,9 +652,14 @@ mod tests {
             READER,
             "local a, b, c\na, b, c = 1, 2, 3\nprint(b)\n",
             &[
-                (1, 7, &assigned("Local variable", "a")),
-                (1, 13, &assigned("Local variable", "c")),
+                (1, 7, &prefixed(&assigned("Local variable", "a"))),
+                (1, 13, &prefixed(&assigned("Local variable", "c"))),
             ],
+        );
+        expect_correction(
+            READER,
+            "local a, b, c\na, b, c = 1, 2, 3\nprint(b)\n",
+            "local _a, b, _c\n_a, b, _c = 1, 2, 3\nprint(b)\n",
         );
     }
 
@@ -728,20 +734,27 @@ mod tests {
     }
 
     #[test]
-    fn keeps_calls_for_their_side_effects() {
+    fn prefixes_locals_holding_calls() {
         expect_correction(
             READER,
-            "local x = f(1)\nlocal y = obj:m 'a'\nlocal z\nz = g()\n",
-            "f(1)\nobj:m 'a'\ng()\n",
+            "local margin = SScaleMin(20 / 3)\nlocal y = obj:m 'a'\nlocal z = f() + 1\n\
+             local w = { f() }\nlocal v\nv = g()\n",
+            "local _margin = SScaleMin(20 / 3)\nlocal _y = obj:m 'a'\nlocal _z = f() + 1\n\
+             local _w = { f() }\nlocal _v\n_v = g()\n",
         );
-        let src = "local x = f() + 1\nlocal y = (f or g)()\nlocal z = { f() }\n";
-        assert_eq!(autocorrect(READER, src), src);
-        assert!(
-            inspect(READER, src)
-                .iter()
-                .all(|offense| !offense.correctable())
+        expect_correction(
+            READER,
+            "local x\nx, y = 1, 2\nprint(y)\n",
+            "local _x\n_x, y = 1, 2\nprint(y)\n",
         );
-        let src = "local x\nx, y = 1, 2\nprint(y)\n";
+        expect_offense(
+            READER,
+            "local margin = SScaleMin(20 / 3)\n",
+            1,
+            7,
+            "Unused local variable `margin`. Remove it or prefix it with `_`.",
+        );
+        let src = "local _x = 1\nlocal x = f()\nprint(_x)\n";
         assert_eq!(autocorrect(READER, src), src);
     }
 
@@ -763,8 +776,11 @@ mod tests {
             "local a = f()\nprint(a)\nlocal c\nprint(c)\n",
         );
         expect_correction(READER, "local a, b = 1, 2\n", "");
-        let src = "local a, b = f()\nprint(b)\nlocal c, d, e = 1, ...\nprint(c, e)\n";
-        assert_eq!(autocorrect(READER, src), src);
+        expect_correction(
+            READER,
+            "local a, b = f()\nprint(b)\nlocal c, d, e = 1, ...\nprint(c, e)\n",
+            "local _a, b = f()\nprint(b)\nlocal c, _d, e = 1, ...\nprint(c, e)\n",
+        );
     }
 
     #[test]
