@@ -17,8 +17,9 @@ use crate::token::TokenKind;
 /// Leading indentation and trailing whitespace are left to other readers, and so are the gaps
 /// other spacing readers own: around binary operators and `=` (`Layout/SpaceAroundOperators`),
 /// directly inside brackets, braces and parentheses (`Layout/SpaceInside*`), before a comma
-/// (`Layout/SpaceBeforeComma`), before a call's `(` (`Layout/SpaceBeforeParen`) and after `!`
-/// (`Layout/SpaceAfterNot`). The whitespace just inside the braces around Lua spliced into
+/// (`Layout/SpaceBeforeComma`), before a call's `(` (`Layout/SpaceBeforeParen`), between
+/// `function` and the `(` of an anonymous function (`Layout/SpaceBeforeAnonymousFunctionParen`)
+/// and after `!` (`Layout/SpaceAfterNot`). The whitespace just inside the braces around Lua spliced into
 /// Lumen markup (`{ name }`) is not checked either. With `AllowForAlignment`, a run is accepted
 /// when the token after it starts at the same column as a token on an adjacent line. With
 /// `ForceEqualSignAlignment`, the `=` of directly consecutive assignment lines with the same
@@ -90,6 +91,7 @@ fn owned_elsewhere(source: &Source, code_index: usize, gap: Gap) -> bool {
             TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Comma
         )
         || (after == TokenKind::LParen && is_callee_end(before))
+        || (before == TokenKind::Function && after == TokenKind::LParen)
         || (before == TokenKind::Markup && opens_splice(source.text_of(gap.before)))
         || source.closes_splice(gap.after)
 }
@@ -160,6 +162,7 @@ mod tests {
             READER,
             "f(  a  )\nt = {  a  }\nt[  1  ] = 1\nf(a  , b)\nf  (a)\nx = !  y\n",
         );
+        expect_no_offenses(READER, "f = function  (a) end\n");
     }
 
     #[test]

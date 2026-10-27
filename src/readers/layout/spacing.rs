@@ -204,7 +204,7 @@ mod tests {
     use crate::config::Config;
     use crate::runner::{Options, ReaderFilter, inspect_source};
 
-    const SPACING_READERS: [&str; 8] = [
+    const SPACING_READERS: [&str; 9] = [
         "Layout/SpaceAroundOperators",
         "Layout/SpaceAfterComma",
         "Layout/SpaceBeforeComma",
@@ -212,6 +212,7 @@ mod tests {
         "Layout/SpaceInsideParens",
         "Layout/SpaceInsideBrackets",
         "Layout/SpaceBeforeParen",
+        "Layout/SpaceBeforeAnonymousFunctionParen",
         "Layout/ExtraSpacing",
     ];
 
@@ -294,7 +295,8 @@ mod tests {
              Layout/SpaceInsideBraces:\n  EnforcedStyle: no_space\n\
              Layout/ExtraSpacing:\n  AllowForAlignment: false\n  ForceEqualSignAlignment: true\n",
             "Layout/SpaceInsideParens:\n  EnforcedStyle: space\n\
-             Layout/SpaceInsideBrackets:\n  EnforcedStyle: space\n",
+             Layout/SpaceInsideBrackets:\n  EnforcedStyle: space\n\
+             Layout/SpaceBeforeAnonymousFunctionParen:\n  EnforcedStyle: space\n",
         ];
         let mut changed = 0;
         for yaml in configs {

@@ -20,6 +20,7 @@ pub mod line_length;
 pub mod space_after_comma;
 pub mod space_after_not;
 pub mod space_around_operators;
+pub mod space_before_anonymous_function_paren;
 pub mod space_before_comma;
 pub mod space_before_comment;
 pub mod space_before_paren;

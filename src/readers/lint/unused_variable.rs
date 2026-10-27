@@ -1,26 +1,36 @@
 //! `Lint/UnusedVariable`.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use yaml_rust2::Yaml;
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::lint::ast::{
+    self, Block, Expression, ExpressionKind, FieldKey, Statement, StatementKind, Visitor,
+};
 use crate::readers::lint::scopes::{Resolution, Variable, resolve};
 use crate::readers::naming::declarations::DeclarationKind;
 use crate::readers::style::doc_comments::{LDOC_TYPED_PARAM_TAGS, doc_comment};
 use crate::source::Source;
 use crate::token::Token;
 
-/// What every message tells the user to do.
-const REMEDY: &str = "Remove it or prefix it with `_`.";
-
 /// Flags local variables, `local function`s, parameters and loop variables that are never read.
 ///
 /// Component tags of Lumen templates (`<Command />`) read the variable they name. A variable
 /// that is assigned after its declaration but never read gets its own message. Names starting
 /// with `_` (including `_` itself), `self` and `...` are exempt. Files that do not parse are
-/// skipped. The fix prefixes the name with `_` at the declaration, at every assignment and, for
-/// a parameter, in the matching `@param` tags of the doc comment right above its function; there
-/// is no fix when the prefixed name already appears in the variable's scope. With
+/// skipped.
+///
+/// The fix removes an unused local together with every assignment to it: a statement declaring
+/// or assigning only that name is deleted (with its line when nothing else is on it, and with
+/// the doc comment of a removed function), and one declaring several names loses the name and
+/// its value. A value that may have side effects stays: `local x = f()` becomes `f()`, and other
+/// such values (`local x = f() + 1`) are not corrected. Parameters and loop variables cannot be
+/// removed, so their fix prefixes the name with `_` at the declaration, at every assignment and,
+/// for a parameter, in the matching `@param` tags of the doc comment right above its function;
+/// there is no fix when the prefixed name already appears in the variable's scope. With
 /// `AllowUnusedParameters`, parameters are never flagged (GMod hooks and callbacks receive
 /// arguments they often do not need).
 pub struct UnusedVariable;
@@ -44,6 +54,8 @@ impl Reader for UnusedVariable {
         let Some(resolution) = resolve(source) else {
             return;
         };
+        let tree = ast::parse(source).ok();
+        let bindings = tree.as_ref().map(bindings).unwrap_or_default();
         for variable in &resolution.variables {
             if variable.implicit
                 || variable.reads > 0
@@ -55,7 +67,15 @@ impl Reader for UnusedVariable {
             }
             let range = variable.token.range();
             let message = message(variable);
-            match fix(source, &resolution, variable) {
+            let edits = match variable.kind {
+                DeclarationKind::Local | DeclarationKind::LocalFunction => {
+                    removal(source, &bindings, variable)
+                }
+                DeclarationKind::Parameter | DeclarationKind::ForVariable => {
+                    prefixing(source, &resolution, variable)
+                }
+            };
+            match edits {
                 Some(edits) => ctx.add_offense_with_fix(range, message, edits),
                 None => ctx.add_offense(range, message),
             };
@@ -65,23 +85,239 @@ impl Reader for UnusedVariable {
 
 /// The offense message for the unread `variable`.
 fn message(variable: &Variable) -> String {
-    let (noun, capitalized) = match variable.kind {
-        DeclarationKind::Local => ("local variable", "Local variable"),
-        DeclarationKind::LocalFunction => ("local function", "Local function"),
-        DeclarationKind::Parameter => ("parameter", "Parameter"),
-        DeclarationKind::ForVariable => ("loop variable", "Loop variable"),
+    let (noun, capitalized, remedy) = match variable.kind {
+        DeclarationKind::Local => ("local variable", "Local variable", "Remove it."),
+        DeclarationKind::LocalFunction => ("local function", "Local function", "Remove it."),
+        DeclarationKind::Parameter => ("parameter", "Parameter", PREFIX_REMEDY),
+        DeclarationKind::ForVariable => ("loop variable", "Loop variable", PREFIX_REMEDY),
     };
     let name = &variable.name;
     if variable.writes.is_empty() {
-        format!("Unused {noun} `{name}`. {REMEDY}")
+        format!("Unused {noun} `{name}`. {remedy}")
     } else {
-        format!("{capitalized} `{name}` is assigned but never used. {REMEDY}")
+        format!("{capitalized} `{name}` is assigned but never used. {remedy}")
     }
+}
+
+/// What the messages for parameters and loop variables tell the user to do.
+const PREFIX_REMEDY: &str = "Remove it or prefix it with `_`.";
+
+/// A statement binding a name, keyed in [`bindings`] by the offset of that name's token.
+#[derive(Clone, Copy)]
+struct Binding<'t> {
+    /// The `local`, `local function`, single-target assignment or `function name()` statement.
+    statement: &'t Statement,
+    /// The position of the name among the statement's names.
+    index: usize,
+}
+
+/// Collects every statement that declares or assigns a plain name, by the name's offset.
+#[derive(Default)]
+struct Bindings<'t>(HashMap<usize, Binding<'t>>);
+
+impl<'t> Visitor<'t> for Bindings<'t> {
+    fn statement(&mut self, statement: &'t Statement) {
+        let mut add = |token: &Token, index| {
+            self.0.insert(token.start, Binding { statement, index });
+        };
+        match &statement.kind {
+            StatementKind::Local { names, .. } => {
+                for (index, name) in names.iter().enumerate() {
+                    add(name, index);
+                }
+            }
+            StatementKind::LocalFunction { name, .. } => add(name, 0),
+            StatementKind::Assignment { targets, .. } => {
+                if let [target] = targets.as_slice()
+                    && let ExpressionKind::Name(name) = &target.kind
+                {
+                    add(name, 0);
+                }
+            }
+            StatementKind::Function { name, .. } => {
+                if let ([path], None) = (name.path.as_slice(), name.method) {
+                    add(path, 0);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The name-binding statements of `tree`.
+fn bindings(tree: &Block) -> Bindings<'_> {
+    let mut bindings = Bindings::default();
+    ast::walk(tree, &mut bindings);
+    bindings
+}
+
+/// The edits removing the local `variable`: its declaration and every assignment to it. `None`
+/// when one of them cannot be removed without changing what the code does.
+fn removal(source: &Source, bindings: &Bindings, variable: &Variable) -> Option<Vec<Edit>> {
+    let mut edits = Vec::new();
+    for token in std::iter::once(&variable.token).chain(&variable.writes) {
+        edits.extend(unbind(source, *bindings.0.get(&token.start)?)?);
+    }
+    Some(edits)
+}
+
+/// The edits removing the name of `binding` from its statement.
+fn unbind(source: &Source, binding: Binding) -> Option<Vec<Edit>> {
+    let statement = binding.statement;
+    let (names, values): (Vec<Range<usize>>, &[Expression]) = match &statement.kind {
+        StatementKind::Local { names, values, .. } => {
+            (names.iter().map(Token::range).collect(), values)
+        }
+        StatementKind::Assignment {
+            targets, values, ..
+        } => (
+            targets.iter().map(|target| target.range.clone()).collect(),
+            values,
+        ),
+        StatementKind::LocalFunction { function, .. }
+        | StatementKind::Function { function, .. } => {
+            return Some(vec![remove_statement(
+                source,
+                statement,
+                Some(&function.keyword),
+            )]);
+        }
+        _ => return None,
+    };
+    if names.len() == 1 {
+        if let [value] = values
+            && let ExpressionKind::Function(function) = &value.kind
+        {
+            return Some(vec![remove_statement(
+                source,
+                statement,
+                Some(&function.keyword),
+            )]);
+        }
+        if values.iter().all(droppable) {
+            return Some(vec![remove_statement(source, statement, None)]);
+        }
+        // Keep a call for its side effects; a statement starting with `(` could continue the
+        // previous one.
+        if let [value] = values
+            && value.is_call()
+            && !source.text[value.range.clone()].starts_with('(')
+        {
+            return Some(vec![Edit::remove(statement.range.start..value.range.start)]);
+        }
+        return None;
+    }
+    let index = binding.index;
+    let mut edits = vec![Edit::remove(list_item(&names, index))];
+    if let Some(value) = values.get(index) {
+        // A multi-valued last value also fills the names after it.
+        let expands = index + 1 == values.len() && values.len() < names.len();
+        if !droppable(value) || (expands && value.is_multi_valued()) {
+            return None;
+        }
+        let ranges: Vec<Range<usize>> = values.iter().map(|value| value.range.clone()).collect();
+        edits.push(Edit::remove(list_item(&ranges, index)));
+    }
+    Some(edits)
+}
+
+/// The range removing item `index` of a comma-separated list with the comma after it (or, for
+/// the last item, the comma before it).
+fn list_item(items: &[Range<usize>], index: usize) -> Range<usize> {
+    match items.get(index + 1) {
+        Some(next) => items[index].start..next.start,
+        None => items[index - 1].end..items[index].end,
+    }
+}
+
+/// Whether evaluating `expression` has no effect besides producing its value: anything but a
+/// call (and markup or tokens the parser does not know).
+fn droppable(expression: &Expression) -> bool {
+    match &expression.kind {
+        ExpressionKind::Nil
+        | ExpressionKind::True
+        | ExpressionKind::False
+        | ExpressionKind::Number
+        | ExpressionKind::String(_)
+        | ExpressionKind::Vararg
+        | ExpressionKind::Function(_)
+        | ExpressionKind::Name(_) => true,
+        ExpressionKind::Table(table) => table.fields.iter().all(|field| {
+            droppable(&field.value)
+                && match &field.key {
+                    FieldKey::Bracketed(key) => droppable(key),
+                    FieldKey::Positional | FieldKey::Named(_) => true,
+                }
+        }),
+        ExpressionKind::Parenthesized(inner) => droppable(inner),
+        ExpressionKind::Field { object, .. } => droppable(object),
+        ExpressionKind::Index { object, key } => droppable(object) && droppable(key),
+        ExpressionKind::Unary { operand, .. } => droppable(operand),
+        ExpressionKind::Binary { left, right, .. } => droppable(left) && droppable(right),
+        ExpressionKind::Call { .. }
+        | ExpressionKind::MethodCall { .. }
+        | ExpressionKind::Markup(_)
+        | ExpressionKind::Opaque => false,
+    }
+}
+
+/// The edit removing `statement` and a `;` right after it. A statement alone on its lines (but
+/// for a trailing comment) is removed with those lines and, for a function whose `function`
+/// keyword is `function`, with the doc comment above it (comment-only lines including a `---` one); otherwise the statement goes
+/// with the blanks after it.
+fn remove_statement(source: &Source, statement: &Statement, function: Option<&Token>) -> Edit {
+    let text = &source.text;
+    let mut start = statement.range.start;
+    let mut end = statement.range.end;
+    let blanks = |from: usize| {
+        text[from..]
+            .find(|c: char| c != ' ' && c != '\t')
+            .map_or(text.len(), |length| from + length)
+    };
+    if text[blanks(end)..].starts_with(';') {
+        end = blanks(end) + 1;
+    }
+    let (first_line, _) = source.position(start);
+    let (last_line, _) = source.position(end);
+    let line_start = source.line_range(first_line).start;
+    let line_end = source.line_range(last_line).end;
+    // A comment after the statement on its last line belongs to it.
+    let only_comments_after = source
+        .code_tokens_on_line(last_line)
+        .filter(|token| token.start >= end)
+        .all(|token| token.kind.is_comment() && token.end <= line_end);
+    let alone = text[line_start..start].trim().is_empty() && only_comments_after;
+    if !alone {
+        let after = blanks(end);
+        if after == line_end {
+            start = text[..start].trim_end_matches([' ', '\t']).len();
+        } else {
+            end = after;
+        }
+        return Edit::remove(start..end);
+    }
+    let first_line = function
+        .and_then(|keyword| doc_comment(source, keyword))
+        .filter(|doc| {
+            doc.comments
+                .iter()
+                .any(|comment| source.text_of(comment).starts_with("---"))
+        })
+        .map_or(first_line, |doc| doc.comments[0].line);
+    start = source.line_range(first_line).start;
+    if line_end < text.len() {
+        end = line_end + 1;
+    } else {
+        // The last line has no line break of its own: take the one before it.
+        end = line_end;
+        start = start.saturating_sub(1);
+    }
+    Edit::remove(start..end)
 }
 
 /// The edits prefixing `variable` with `_`, or `None` when the prefixed name already appears in
 /// its scope.
-fn fix(source: &Source, resolution: &Resolution, variable: &Variable) -> Option<Vec<Edit>> {
+fn prefixing(source: &Source, resolution: &Resolution, variable: &Variable) -> Option<Vec<Edit>> {
     let renamed = format!("_{}", variable.name);
     if resolution.mentions(&renamed, &variable.scope) {
         return None;
@@ -121,12 +357,24 @@ mod tests {
 
     const READER: &str = "Lint/UnusedVariable";
 
+    /// What the message for a variable of `kind` tells the user to do.
+    fn remedy(kind: &str) -> &'static str {
+        if kind.to_lowercase().starts_with("local") {
+            "Remove it."
+        } else {
+            "Remove it or prefix it with `_`."
+        }
+    }
+
     fn unused(kind: &str, name: &str) -> String {
-        format!("Unused {kind} `{name}`. Remove it or prefix it with `_`.")
+        format!("Unused {kind} `{name}`. {}", remedy(kind))
     }
 
     fn assigned(kind: &str, name: &str) -> String {
-        format!("{kind} `{name}` is assigned but never used. Remove it or prefix it with `_`.")
+        format!(
+            "{kind} `{name}` is assigned but never used. {}",
+            remedy(kind)
+        )
     }
 
     #[test]
@@ -415,21 +663,116 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_the_declaration_and_writes() {
+    fn removes_unused_locals_with_their_lines() {
+        expect_correction(READER, "local A = A\nprint(1)\n", "print(1)\n");
         expect_correction(
             READER,
-            "local a, b = 1, 2\nprint(b)\nlocal x\nx = 1\nif y then x = 2 end\n",
-            "local _a, b = 1, 2\nprint(b)\nlocal _x\n_x = 1\nif y then _x = 2 end\n",
+            "local x = 1\nlocal y = { a = 1, [k] = t.v, -n }\nlocal z\nreturn 1\n",
+            "return 1\n",
         );
         expect_correction(
             READER,
-            "for k, v in pairs(t) do print(v) end\nlocal function f() end\n",
-            "for _k, v in pairs(t) do print(v) end\nlocal function _f() end\n",
+            "if a then\n  local x = a .. 'b';\n  print(a)\nend\n",
+            "if a then\n  print(a)\nend\n",
+        );
+        expect_correction(READER, "print(1)\nlocal x = 1", "print(1)");
+        expect_correction(READER, "local x = 1", "");
+        expect_correction(
+            READER,
+            "local x = 0 -- luacheck: ignore\nlocal y = 1 --[[a]] -- b\nreturn 1\n",
+            "return 1\n",
+        );
+    }
+
+    #[test]
+    fn removes_unused_locals_sharing_a_line() {
+        expect_correction(READER, "do local x = 1 end\n", "do end\n");
+        expect_correction(READER, "local x = 1 print(2)\n", "print(2)\n");
+        expect_correction(READER, "print(2) local x = 1\n", "print(2)\n");
+        expect_correction(READER, "print(2) local x = 1 -- c\n", "print(2) -- c\n");
+    }
+
+    #[test]
+    fn removes_unused_functions_with_their_doc_comment() {
+        expect_correction(
+            READER,
+            "-- Helpers.\n\n--- Does things.\n-- @param a [Number]\nlocal function helper(a)\n  \
+             return a\nend\n\nreturn 1\n",
+            "-- Helpers.\n\n\nreturn 1\n",
         );
         expect_correction(
             READER,
-            "local f\nfunction f() end\n",
-            "local _f\nfunction _f() end\n",
+            "-- Not a doc comment.\nlocal f = function()\nend\nreturn 1\n",
+            "-- Not a doc comment.\nreturn 1\n",
+        );
+    }
+
+    #[test]
+    fn removes_the_assignments_of_write_only_locals() {
+        expect_correction(
+            READER,
+            "local x\nx = 1\nif y then x = 2 end\nreturn y\n",
+            "if y then end\nreturn y\n",
+        );
+        expect_correction(
+            READER,
+            "local f\nfunction f() end\nreturn 1\n",
+            "return 1\n",
+        );
+        expect_correction(
+            READER,
+            "local done\nhook.Add('Think', 'x', function()\n  done = true\nend)\n",
+            "hook.Add('Think', 'x', function()\nend)\n",
+        );
+        expect_correction(READER, "local x\ndo local x\nx = 1 end\n", "do\nend\n");
+    }
+
+    #[test]
+    fn keeps_calls_for_their_side_effects() {
+        expect_correction(
+            READER,
+            "local x = f(1)\nlocal y = obj:m 'a'\nlocal z\nz = g()\n",
+            "f(1)\nobj:m 'a'\ng()\n",
+        );
+        let src = "local x = f() + 1\nlocal y = (f or g)()\nlocal z = { f() }\n";
+        assert_eq!(autocorrect(READER, src), src);
+        assert!(
+            inspect(READER, src)
+                .iter()
+                .all(|offense| !offense.correctable())
+        );
+        let src = "local x\nx, y = 1, 2\nprint(y)\n";
+        assert_eq!(autocorrect(READER, src), src);
+    }
+
+    #[test]
+    fn removes_one_name_of_several() {
+        expect_correction(
+            READER,
+            "local a, b = 1, 2\nprint(b)\n",
+            "local b = 2\nprint(b)\n",
+        );
+        expect_correction(
+            READER,
+            "local a, b, c = 1, 2, f()\nprint(a, c)\n",
+            "local a, c = 1, f()\nprint(a, c)\n",
+        );
+        expect_correction(
+            READER,
+            "local a, b = f()\nprint(a)\nlocal c, d\nprint(c)\n",
+            "local a = f()\nprint(a)\nlocal c\nprint(c)\n",
+        );
+        expect_correction(READER, "local a, b = 1, 2\n", "");
+        let src = "local a, b = f()\nprint(b)\nlocal c, d, e = 1, ...\nprint(c, e)\n";
+        assert_eq!(autocorrect(READER, src), src);
+    }
+
+    #[test]
+    fn prefixes_parameters_and_loop_variables() {
+        expect_correction(
+            READER,
+            "for k, v in pairs(t) do print(v) end\nfunction M.f(a) a = 1 end\n",
+            "for _k, v in pairs(t) do print(v) end\nfunction M.f(_a) _a = 1 end\n",
         );
     }
 
@@ -465,28 +808,16 @@ mod tests {
 
     #[test]
     fn keeps_the_offense_when_the_prefixed_name_is_taken() {
-        let src = "local _x = 1\nlocal x = 2\nprint(_x)\n";
-        expect_offense(READER, src, 2, 7, &unused("local variable", "x"));
+        let src = "local _x = 1\nfunction f(x) return _x end\n";
+        expect_offense(READER, src, 2, 12, &unused("parameter", "x"));
         assert_eq!(autocorrect(READER, src), src);
-        let offenses = inspect(READER, src);
-        assert!(!offenses[0].correctable());
-        let src = "local _x, x = 1, 2\nprint(_x)\n";
-        assert_eq!(autocorrect(READER, src), src);
+        assert!(!inspect(READER, src)[0].correctable());
         let src = "function f(x) x = 1 return _x end\n";
         assert_eq!(autocorrect(READER, src), src);
         expect_correction(
             READER,
-            "do local x = 1 end\nprint(_x)\n",
-            "do local _x = 1 end\nprint(_x)\n",
-        );
-    }
-
-    #[test]
-    fn correction_of_shadowed_names_is_consistent() {
-        expect_correction(
-            READER,
-            "local x\ndo local x\nx = 1 end\n",
-            "local _x\ndo local _x\n_x = 1 end\n",
+            "do local function f(x) end f() end\nprint(_x)\n",
+            "do local function f(_x) end f() end\nprint(_x)\n",
         );
     }
 
@@ -518,15 +849,6 @@ mod tests {
             1,
             10,
             &unused("local variable", "a"),
-        );
-    }
-
-    #[test]
-    fn writes_inside_closures_are_renamed() {
-        expect_correction(
-            READER,
-            "local done\nhook.Add('Think', 'x', function()\n  done = true\nend)\n",
-            "local _done\nhook.Add('Think', 'x', function()\n  _done = true\nend)\n",
         );
     }
 

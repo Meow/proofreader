@@ -8,7 +8,8 @@ use crate::token::TokenKind;
 /// Flags whitespace between a function name (or a `)`, `]` or string ending a call target) and
 /// the `(` that opens its arguments or parameters on the same line.
 ///
-/// Keywords before `(` (`if (`, `return (`, `and (`, `function (`) are not affected.
+/// Keywords before `(` (`if (`, `return (`, `and (`) are not affected; `function (` is left to
+/// `Layout/SpaceBeforeAnonymousFunctionParen`.
 pub struct SpaceBeforeParen;
 
 impl Reader for SpaceBeforeParen {

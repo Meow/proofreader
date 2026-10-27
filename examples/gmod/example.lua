@@ -49,4 +49,16 @@ function PLUGIN:GetRank( actor )
 	return ranks[ levels[ entry.points ] ] or ranks[ 1 ]
 end
 
+--- Returns the scoreboard entries, highest score first.
+-- @return [Table the sorted entries]
+function PLUGIN:GetLeaders()
+	local leaders = table.ClearKeys( scores )
+
+	table.sort( leaders, function( a, b )
+		return a.points > b.points
+	end )
+
+	return leaders
+end
+
 return PLUGIN

@@ -3,7 +3,7 @@
 # - tab indentation, a tab 4 columns wide
 # - `and`/`or` rather than `&&`/`||`, `!` rather than `not`, `!=`
 # - parentheses around conditions without inner spaces: if (condition) then
-# - func(arg1, arg2) and {a = 1} without inner spaces; array[index], but spaces inside a
+# - func(arg1, arg2), function(arg) and {a = 1} without inner spaces; array[index], but spaces inside a
 #   bracket pair holding another one: array1[ array2[index] ]
 # - concatenation without spaces: like.."this".."."
 # - "double quotes" ('single' when the string contains "), [[ ]] for multi-line strings

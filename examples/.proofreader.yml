@@ -132,6 +132,13 @@ Layout/SpaceAroundOperators:
   ConcatStyle: no_space
   AllowForAlignment: true
 
+# Checks the spacing between `function` and the parameters of an anonymous function.
+Layout/SpaceBeforeAnonymousFunctionParen:
+  Enabled: true
+  Severity: convention
+  AutoCorrect: true
+  EnforcedStyle: no_space
+
 # Checks for spaces before a comma.
 Layout/SpaceBeforeComma:
   Enabled: true
