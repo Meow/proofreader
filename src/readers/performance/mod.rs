@@ -5,5 +5,6 @@
 pub mod constant_object_in_hot_path;
 pub mod distance_comparison;
 pub mod expensive_call_in_hot_path;
+pub mod get_all_loop;
 pub mod hot_paths;
 pub mod type_comparison;

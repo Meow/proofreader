@@ -373,6 +373,13 @@ Performance/ExpensiveCallInHotPath:
   SafeFunctions: []
   Alternatives: {}
 
+# Checks for loops over `player.GetAll()` and `ents.GetAll()` that `player.Iterator()` and `ents.Iterator()` can replace.
+Performance/GetAllLoop:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Iterators: { player.GetAll: player.Iterator, ents.GetAll: ents.Iterator }
+
 # Checks for `type(x)` compared with a type name that a predicate such as `isnumber` tests directly.
 Performance/TypeComparison:
   Enabled: true
