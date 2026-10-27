@@ -1,4 +1,5 @@
-//! Hot paths: the functions GMod calls every frame or tick, and the calls made inside them.
+//! Hot paths: the functions GMod calls every frame or tick and the calls made inside them, plus
+//! small expression helpers shared by the performance readers.
 //!
 //! A function is a hot path when it is defined under a hot path name (`function GM:Think()`,
 //! `function PANEL:Paint(w, h)`, `ENT.Draw = function(self)`, `{ Think = function() end }`) or
@@ -136,6 +137,59 @@ pub fn hot_calls<'t>(
     hot_paths: &[String],
     hook_functions: &[String],
 ) -> Vec<HotCall<'t>> {
+    let mut collector = Collector {
+        source,
+        hot: hot_function_offsets(block, source, hot_paths, hook_functions),
+        stack: Vec::new(),
+        calls: Vec::new(),
+    };
+    walk(block, &mut collector);
+    collector.calls
+}
+
+/// The hot functions of `block` under the `HotPaths` and `HookFunctions` options of the running
+/// reader; see [`hot_functions`].
+pub fn configured_hot_functions<'t>(ctx: &Context, block: &'t Block) -> Vec<HotFunction<'t>> {
+    let hot_paths = ctx.option_str_list("HotPaths", DEFAULT_HOT_PATHS);
+    let hook_functions = ctx.option_str_list("HookFunctions", DEFAULT_HOOK_FUNCTIONS);
+    hot_functions(block, ctx.source, &hot_paths, &hook_functions)
+}
+
+/// A hot function that is not nested in another one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HotFunction<'t> {
+    /// The function; the functions nested in its body are part of the hot path.
+    pub function: &'t Function,
+    /// The name of the hot path it is (`HUDPaint`).
+    pub hot_path: String,
+}
+
+/// The outermost hot functions of `block`, in source order: the functions defined under one of
+/// the `hot_paths` names or registered for one of them through a call of one of the
+/// `hook_functions`, other than those nested in such a function (which belong to it).
+pub fn hot_functions<'t>(
+    block: &'t Block,
+    source: &Source,
+    hot_paths: &[String],
+    hook_functions: &[String],
+) -> Vec<HotFunction<'t>> {
+    let mut outermost = Outermost {
+        hot: hot_function_offsets(block, source, hot_paths, hook_functions),
+        depth: 0,
+        functions: Vec::new(),
+    };
+    walk(block, &mut outermost);
+    outermost.functions
+}
+
+/// The hot path of every hot function of `block`, keyed by the offset of its `function`
+/// keyword.
+fn hot_function_offsets(
+    block: &Block,
+    source: &Source,
+    hot_paths: &[String],
+    hook_functions: &[String],
+) -> HashMap<usize, String> {
     let mut marker = Marker {
         source,
         hot_paths,
@@ -153,14 +207,33 @@ pub fn hot_calls<'t>(
                 .or_insert_with(|| hot_path.clone());
         }
     }
-    let mut collector = Collector {
-        source,
-        hot: marker.hot,
-        stack: Vec::new(),
-        calls: Vec::new(),
-    };
-    walk(block, &mut collector);
-    collector.calls
+    marker.hot
+}
+
+/// Collects the hot functions that are not nested in another hot function.
+struct Outermost<'t> {
+    hot: HashMap<usize, String>,
+    /// How many functions the walk is inside of, counted from the outermost hot one.
+    depth: usize,
+    functions: Vec<HotFunction<'t>>,
+}
+
+impl<'t> Visitor<'t> for Outermost<'t> {
+    fn enter_function(&mut self, function: &'t Function) {
+        if self.depth > 0 {
+            self.depth += 1;
+        } else if let Some(hot_path) = self.hot.get(&function.keyword.start) {
+            self.functions.push(HotFunction {
+                function,
+                hot_path: hot_path.clone(),
+            });
+            self.depth = 1;
+        }
+    }
+
+    fn leave_function(&mut self, _function: &'t Function) {
+        self.depth = self.depth.saturating_sub(1);
+    }
 }
 
 /// Finds the hot functions, keyed by the offset of their `function` keyword, and the functions
@@ -358,6 +431,39 @@ pub fn is_constant(expression: &Expression) -> bool {
     }
 }
 
+/// Whether `expression` can be written twice without changing what the code does or costing a
+/// call: a name, or fields and indexes over a name whose keys are literals or names (`t`,
+/// `self.items`, `data[id].list`).
+pub fn is_repeatable(expression: &Expression) -> bool {
+    match &expression.kind {
+        ExpressionKind::Name(_) => true,
+        ExpressionKind::Field { object, .. } => is_repeatable(object),
+        ExpressionKind::Index { object, key } => {
+            matches!(
+                key.kind,
+                ExpressionKind::Name(_)
+                    | ExpressionKind::Number
+                    | ExpressionKind::String(_)
+                    | ExpressionKind::True
+                    | ExpressionKind::False
+            ) && is_repeatable(object)
+        }
+        _ => false,
+    }
+}
+
+/// Longest code quoted in a message; longer code is shown as `...`.
+const MAX_QUOTED: usize = 40;
+
+/// `code` as quoted in a message: itself when short and on one line, otherwise `...`.
+pub fn abbreviated(code: &str) -> &str {
+    if code.len() <= MAX_QUOTED && !code.contains('\n') {
+        code
+    } else {
+        "..."
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +525,54 @@ mod tests {
             ]
         );
         assert_eq!(calls("function Think() a() end\n"), Vec::new());
+    }
+
+    /// The `(first line, hot path)` pairs of the outermost hot functions in `src`.
+    fn functions(src: &str) -> Vec<(u32, String)> {
+        let source = Source::new("test.lua", src);
+        let block = parse(&source).expect("parses");
+        let hot_paths: Vec<String> = DEFAULT_HOT_PATHS.iter().map(|s| (*s).to_owned()).collect();
+        let hooks: Vec<String> = DEFAULT_HOOK_FUNCTIONS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        hot_functions(&block, &source, &hot_paths, &hooks)
+            .into_iter()
+            .map(|hot| (source.position(hot.function.keyword.start).0, hot.hot_path))
+            .collect()
+    }
+
+    #[test]
+    fn finds_outermost_hot_functions() {
+        assert_eq!(
+            functions(
+                "function GM:Think()\n  local p = { Paint = function() end }\nend\n\
+                 function GM:Init() end\nhook.Add('Tick', 'x', tick)\nlocal function tick() end\n"
+            ),
+            vec![(1, "Think".to_owned()), (6, "Tick".to_owned())]
+        );
+    }
+
+    #[test]
+    fn repeatable_expressions() {
+        let source = Source::new(
+            "test.lua",
+            "f(t, self.items, a[1].b, a[k], a['x'], f().x, a[k + 1], (t), a:b(), t[true])\n",
+        );
+        let block = parse(&source).expect("parses");
+        let StatementKind::Call(call) = &block.statements[0].kind else {
+            panic!("call");
+        };
+        let (_, arguments) = call.as_call(&source).expect("call");
+        let repeatable: Vec<bool> = arguments.values.iter().map(is_repeatable).collect();
+        assert_eq!(
+            repeatable,
+            vec![
+                true, true, true, true, true, false, false, false, false, true
+            ]
+        );
+        assert_eq!(abbreviated("x"), "x");
+        assert_eq!(abbreviated("{\n}"), "...");
     }
 
     #[test]

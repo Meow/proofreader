@@ -2,11 +2,15 @@
 //! functions that run every frame or tick. The `HotPaths` and `HookFunctions` options of the
 //! `Performance` section are shared by every reader that looks at hot paths.
 
+pub mod concat_in_loop;
 pub mod constant_object_in_hot_path;
 pub mod distance_comparison;
 pub mod division_by_constant;
 pub mod expensive_call_in_hot_path;
 pub mod get_all_loop;
+pub mod global_lookup_in_hot_path;
 pub mod hot_paths;
+pub mod power_of_two;
 pub mod sequential_pairs;
+pub mod table_insert_append;
 pub mod type_comparison;

@@ -20,10 +20,10 @@ pub trait Reader: Sync + Send {
     /// A one-sentence description shown by `--show-readers`.
     fn description(&self) -> &'static str;
 
-    /// Severity used unless configured otherwise: `Warning` for `Lint/*` and `Performance/*`,
-    /// `Convention` otherwise.
+    /// Severity used unless configured otherwise: `Warning` for `Lint/*`, `Performance/*` and
+    /// `Security/*`, `Convention` otherwise.
     fn default_severity(&self) -> Severity {
-        if matches!(department(self.name()), "Lint" | "Performance") {
+        if matches!(department(self.name()), "Lint" | "Performance" | "Security") {
             Severity::Warning
         } else {
             Severity::Convention
@@ -158,7 +158,14 @@ inventory::collect!(Registration);
 
 /// The departments readers belong to; a configuration section named after a department applies
 /// to every reader of it.
-pub const DEPARTMENTS: [&str; 5] = ["Layout", "Lint", "Naming", "Performance", "Style"];
+pub const DEPARTMENTS: [&str; 6] = [
+    "Layout",
+    "Lint",
+    "Naming",
+    "Performance",
+    "Security",
+    "Style",
+];
 
 /// Options every reader of a department reads from the department's section, with their
 /// defaults; submit one per department that has such options with `inventory::submit!`.

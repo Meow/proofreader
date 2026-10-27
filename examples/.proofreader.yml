@@ -209,6 +209,24 @@ Lint/DuplicateTableKey:
   Severity: warning
   AutoCorrect: true
 
+# Checks that format calls pass as many arguments as their format string expects.
+Lint/FormatArgumentCount:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Functions: ['string.format', 'Format']
+
+# Checks for assignments to global variables from inside functions.
+Lint/GlobalAssignment:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  AllowFileLevel: true
+  AllowUppercase: true
+  AllowedGlobals: ['GM', 'GAMEMODE', 'ENT', 'SWEP', 'EFFECT', 'TOOL', 'PANEL', 'PLUGIN', 'SCHEMA',
+                   'Schema', 'ITEM', 'FACTION', 'CLASS', 'ATTRIBUTE', 'LANGUAGE', 'CHAT_CLASS',
+                   'PACKAGE', 'CMD', 'ROLE', 'THEME', 'SKILL', 'PLAYER']
+
 # Checks for assert messages that are built even when the assertion passes.
 Lint/NonLiteralAssertMessage:
   Enabled: false
@@ -228,6 +246,18 @@ Lint/RedefinedLocal:
   Severity: warning
   AutoCorrect: true
   AllowParameters: false
+
+# Checks for `table.remove(t, i)` in a loop walking `t` forward, which skips elements.
+Lint/RemoveInForwardLoop:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for variables, fields and indexes assigned to themselves.
+Lint/SelfAssignment:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
 
 # Checks for variables and parameters named after a GMod library.
 Lint/ShadowedLibrary:
@@ -249,6 +279,19 @@ Lint/UnbalancedAssignment:
   Enabled: true
   Severity: warning
   AutoCorrect: true
+
+# Checks for deferred callbacks that use a captured entity without checking `IsValid`.
+Lint/UncheckedEntityInCallback:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Functions: { timer.Simple: 2, timer.Create: 4 }
+  EntityTables: ['ENT', 'SWEP', 'EFFECT', 'PANEL', 'TOOL']
+  EntityNames: ['ply', 'player', 'pl', 'client', 'ent', 'entity', 'target', 'victim', 'attacker',
+                'inflictor', 'owner', 'weapon', 'wep', 'npc', 'vehicle', 'ragdoll', 'prop', 'panel']
+  EntityFunctions: ['ents.Create', 'ents.CreateClientProp', 'Entity', 'player.GetBySteamID',
+                    'player.GetBySteamID64', 'vgui.Create']
+  AlwaysValidFunctions: ['LocalPlayer']
 
 # Checks for `@param` tags that name no parameter of the documented function.
 Lint/UndefinedDocParam:
@@ -344,6 +387,12 @@ Performance:
              'VehicleMove', 'ViewModelDrawn']
   HookFunctions: ['hook.Add']
 
+# Checks for strings built with `..` in a loop, which copies them every iteration.
+Performance/ConcatInLoop:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for objects built from constants in functions that run every frame or tick.
 Performance/ConstantObjectInHotPath:
   Enabled: true
@@ -387,6 +436,20 @@ Performance/GetAllLoop:
   AutoCorrect: true
   Iterators: { player.GetAll: player.Iterator, ents.GetAll: ents.Iterator }
 
+# Checks for library functions looked up through their global several times in a function that runs every frame or tick.
+Performance/GlobalLookupInHotPath:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+  Libraries: ['math', 'surface', 'draw', 'render', 'cam', 'string', 'table', 'util', 'input', 'gui']
+  MinUses: 2
+
+# Checks for `x ^ 2`, which multiplying `x * x` computes without calling `pow`.
+Performance/PowerOfTwo:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for `pairs` loops over sequences, which `ipairs` walks faster and in order.
 Performance/SequentialPairs:
   Enabled: true
@@ -402,12 +465,57 @@ Performance/SequentialPairs:
                   'table.Copy', 'table.GetKeys', 'table.maxn', 'istable', 'type', 'tostring',
                   'print', 'PrintTable']
 
+# Checks for `table.insert(t, v)` that `t[#t + 1] = v` does without a function call.
+Performance/TableInsertAppend:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for `type(x)` compared with a type name that a predicate such as `isnumber` tests directly.
 Performance/TypeComparison:
   Enabled: true
   Severity: warning
   AutoCorrect: true
   Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }
+
+# Checks for data from a net message reaching code execution, console commands or file writes on the server.
+Security/NetMessageExecution:
+  Enabled: true
+  Severity: error
+  AutoCorrect: true
+  Sources: ['net.ReadString', 'net.ReadData', 'net.ReadTable', 'net.ReadType']
+  Sinks: ['RunString', 'RunStringEx', 'CompileString', 'game.ConsoleCommand', 'RunConsoleCommand',
+          'file.Write', 'file.Append', 'file.Delete', 'file.Rename']
+  PayloadReceivers: ['netstream.Hook', 'cable.receive', 'Cable.receive']
+
+# Checks for `net.ReadTable()` in net message handlers that run on the server.
+Security/NetReadTable:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for SQL queries built from values that are not escaped.
+Security/SqlInjection:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Functions: ['sql.Query', 'sql.QueryRow', 'sql.QueryValue']
+  Methods: ['query']
+  Escapers: ['sql.SQLStr', 'SQLStr', 'tonumber', 'math.floor', 'math.Round']
+  EscapeMethods: ['escape', 'quote', 'quote_name']
+
+# Checks for console commands that do something privileged on the server without checking permissions.
+Security/UncheckedConsoleCommand:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+  PrivilegedFunctions: ['RunConsoleCommand', 'game.ConsoleCommand', 'RunString', 'RunStringEx',
+                        'CompileString', 'file.Write', 'file.Append', 'file.Delete', 'ents.Create',
+                        'game.CleanUpMap']
+  PrivilegedMethods: ['Kick', 'Ban', 'SetUserGroup', 'SetHealth', 'SetArmor', 'Give',
+                      'StripWeapons', 'GodEnable']
+  PermissionChecks: ['IsAdmin', 'IsSuperAdmin', 'IsUserGroup', 'CheckGroup', 'HasPermission',
+                     'IsListenServerHost', 'query', 'CAMI.PlayerHasAccess', 'ULib.ucl.query']
 
 # Checks that logical operators are spelled `and`/`or` (or `&&`/`||`).
 Style/AndOr:

@@ -4,4 +4,5 @@ pub mod layout;
 pub mod lint;
 pub mod naming;
 pub mod performance;
+pub mod security;
 pub mod style;
