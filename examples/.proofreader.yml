@@ -359,6 +359,13 @@ Performance/DistanceComparison:
   Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }
   Functions: ['math.sqrt']
 
+# Checks for division by a power of two, which multiplying by its reciprocal does exactly and faster.
+Performance/DivisionByConstant:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  MaxDivisor: 256
+
 # Checks for expensive calls in functions that run every frame or tick.
 Performance/ExpensiveCallInHotPath:
   Enabled: true

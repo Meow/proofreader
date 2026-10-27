@@ -4,6 +4,7 @@
 
 pub mod constant_object_in_hot_path;
 pub mod distance_comparison;
+pub mod division_by_constant;
 pub mod expensive_call_in_hot_path;
 pub mod get_all_loop;
 pub mod hot_paths;

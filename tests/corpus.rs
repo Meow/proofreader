@@ -14,9 +14,10 @@ const CORPUS: &str = "/home/luna/code/flux-ce";
 
 /// The readers whose fixes rewrite code rather than its layout or spelling; each has its own
 /// test below and is left out of the test of every correction at once.
-const REWRITING_READERS: [&str; 5] = [
+const REWRITING_READERS: [&str; 6] = [
     "Style/PreferredLocalAlias",
     "Performance/DistanceComparison",
+    "Performance/DivisionByConstant",
     "Performance/GetAllLoop",
     "Performance/SequentialPairs",
     "Performance/TypeComparison",
