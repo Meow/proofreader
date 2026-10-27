@@ -380,6 +380,21 @@ Performance/GetAllLoop:
   AutoCorrect: true
   Iterators: { player.GetAll: player.Iterator, ents.GetAll: ents.Iterator }
 
+# Checks for `pairs` loops over sequences, which `ipairs` walks faster and in order.
+Performance/SequentialPairs:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  SequentialFunctions: ['player.GetAll', 'player.GetHumans', 'player.GetBots', 'team.GetPlayers',
+                        'ents.GetAll', 'ents.FindByClass', 'ents.FindByModel', 'ents.FindByName',
+                        'ents.FindInBox', 'ents.FindInSphere', 'ents.FindInCone', 'ents.FindInPVS',
+                        'ents.FindAlongRay', 'string.Explode', 'string.Split', 'string.ToTable',
+                        'table.GetKeys', 'table.ClearKeys', 'file.Find']
+  SafeFunctions: ['unpack', 'table.unpack', 'table.concat', 'table.sort', 'table.Count',
+                  'table.HasValue', 'table.KeyFromValue', 'table.Random', 'table.IsEmpty',
+                  'table.Copy', 'table.GetKeys', 'table.maxn', 'istable', 'type', 'tostring',
+                  'print', 'PrintTable']
+
 # Checks for `type(x)` compared with a type name that a predicate such as `isnumber` tests directly.
 Performance/TypeComparison:
   Enabled: true

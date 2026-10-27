@@ -57,7 +57,7 @@ impl Reader for GetAllLoop {
         };
         walk(&block, &mut finder);
         for (range, message, replacement) in finder.found {
-            if has_comment(source, &range) {
+            if source.has_comment_in(&range) {
                 ctx.add_offense(range, message);
             } else {
                 ctx.add_offense_with_fix(
@@ -137,17 +137,6 @@ impl<'t> Visitor<'t> for Finder<'_> {
         let message = format!("Use `{iterator}()` instead of `{written}`.");
         self.found.push((range, message, format!("{iterator}()")));
     }
-}
-
-/// Whether a comment token lies inside `range`.
-fn has_comment(source: &Source, range: &Range<usize>) -> bool {
-    let first = source
-        .tokens
-        .partition_point(|token| token.start < range.start);
-    source.tokens[first..]
-        .iter()
-        .take_while(|token| token.start < range.end)
-        .any(|token| token.kind.is_comment())
 }
 
 inventory::submit! { Registration(|| Box::new(GetAllLoop)) }

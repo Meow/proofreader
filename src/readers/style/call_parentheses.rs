@@ -1,7 +1,5 @@
 //! `Style/CallParentheses`.
 
-use std::ops::Range;
-
 use yaml_rust2::Yaml;
 
 use crate::offense::Edit;
@@ -9,7 +7,6 @@ use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::ast::{
     ArgumentStyle, Arguments, Expression, ExpressionKind, Visitor, parse, walk,
 };
-use crate::source::Source;
 
 /// Checks whether calls with a single string or table literal argument use parentheses.
 ///
@@ -104,7 +101,7 @@ impl<'t> Visitor<'t> for Calls<'t> {
 fn report_missing(ctx: &mut Context, callee_end: usize, arguments: &Arguments, kind: &str) {
     let message = format!("Use parentheses around the {kind} argument of a call.");
     let gap = callee_end..arguments.range.start;
-    let commented = has_comment(ctx.source, &gap);
+    let commented = ctx.source.has_comment_in(&gap);
     let offense = ctx.add_offense(arguments.range.clone(), message);
     if !commented {
         offense.with_fix(vec![
@@ -132,22 +129,11 @@ fn report_parentheses(
     if text[before.clone()].contains('\n') || text[after.clone()].contains('\n') {
         return;
     }
-    let commented = has_comment(ctx.source, &before) || has_comment(ctx.source, &after);
+    let commented = ctx.source.has_comment_in(&before) || ctx.source.has_comment_in(&after);
     let offense = ctx.add_offense(arguments.range.clone(), message);
     if !commented {
         offense.with_fix(vec![Edit::replace(before, " "), Edit::remove(after)]);
     }
-}
-
-/// Whether a comment token lies inside `range`.
-fn has_comment(source: &Source, range: &Range<usize>) -> bool {
-    let first = source
-        .tokens
-        .partition_point(|token| token.start < range.start);
-    source.tokens[first..]
-        .iter()
-        .take_while(|token| token.start < range.end)
-        .any(|token| token.kind.is_comment())
 }
 
 inventory::submit! { Registration(|| Box::new(CallParentheses)) }

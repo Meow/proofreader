@@ -128,6 +128,17 @@ impl Source {
         (start + col.saturating_sub(1) as usize).min(self.text.len())
     }
 
+    /// Whether a comment token starts inside `range`.
+    pub fn has_comment_in(&self, range: &Range<usize>) -> bool {
+        let first = self
+            .tokens
+            .partition_point(|token| token.start < range.start);
+        self.tokens[first..]
+            .iter()
+            .take_while(|token| token.start < range.end)
+            .any(|token| token.kind.is_comment())
+    }
+
     /// Whether line `n` is empty or contains only whitespace.
     pub fn is_blank(&self, n: u32) -> bool {
         self.line(n).trim().is_empty()
