@@ -422,9 +422,14 @@ fn never_nil(expression: &Expression) -> bool {
             operator, right, ..
         } => match operator.kind {
             TokenKind::And | TokenKind::AndAnd => false,
-            TokenKind::Or | TokenKind::OrOr => never_nil(right),
+            TokenKind::Or | TokenKind::OrOr | TokenKind::Coalesce => never_nil(right),
             _ => true,
         },
+        ExpressionKind::Ternary {
+            consequent,
+            alternative,
+            ..
+        } => never_nil(consequent) && never_nil(alternative),
         _ => false,
     }
 }
@@ -437,6 +442,21 @@ mod tests {
 
     const READER: &str = "Performance/SequentialPairs";
     const MESSAGE: &str = "Use `ipairs` instead of `pairs` to walk a sequence.";
+
+    #[test]
+    fn judges_the_extended_operators() {
+        expect_offense(
+            READER,
+            "for _, v in pairs({ a ?? 1, c ? 'x' : 'y', 1 << 2, || -> 1 }) do end\n",
+            1,
+            13,
+            MESSAGE,
+        );
+        expect_no_offenses(
+            READER,
+            "for _, v in pairs({ a ?? b, c ? 'x' : nil }) do end\n",
+        );
+    }
 
     #[test]
     fn flags_pairs_over_sequence_constructors_and_functions() {

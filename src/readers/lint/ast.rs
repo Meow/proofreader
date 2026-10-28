@@ -2,9 +2,10 @@
 //! expressions rather than a token stream.
 //!
 //! [`parse`] builds the tree with a recursive descent parser over the code tokens (comments
-//! dropped). It knows the GLua extensions (`!`, `!=`, `&&`, `||`, `continue`, `goto` and labels)
-//! and, in Lumen templates, treats a markup element as an operand whose splices hold Lua
-//! expressions. Tokens the grammar has no place for that are not keywords, operators or
+//! dropped). It knows the GLua extensions (`!`, `!=`, `&&`, `||`, `continue`, `goto` and labels),
+//! the syntax extensions of LuaJIT 3.0 (bit operators, `c ? a : b`, `?.`, `??`, compound
+//! assignment, `const`, short functions and empty statements anywhere) and, in Lumen templates,
+//! treats a markup element as an operand whose splices hold Lua expressions. Tokens the grammar has no place for that are not keywords, operators or
 //! punctuation (unrecognised bytes) are opaque values, as they are reported by `Lint/Syntax`
 //! already.
 //!
@@ -51,18 +52,18 @@ pub struct Statement {
 pub enum StatementKind {
     /// A lone `;`.
     Empty,
-    /// `local a, b = x, y`; `values` is empty without `=`.
+    /// `local a, b = x, y`, or `const a, b = x, y`; `values` is empty without `=`.
     Local {
-        /// The `local` keyword.
+        /// The `local` keyword, or the `const` keyword of a constant declaration.
         local: Token,
         /// The declared names.
         names: Vec<Token>,
         /// The values after `=`.
         values: Vec<Expression>,
     },
-    /// `local function f() ... end`.
+    /// `local function f() ... end`, or `const function f() ... end`.
     LocalFunction {
-        /// The `local` keyword.
+        /// The `local` keyword, or the `const` keyword of a constant function.
         local: Token,
         /// The declared name.
         name: Token,
@@ -84,6 +85,16 @@ pub enum StatementKind {
         assign: Token,
         /// The assigned values.
         values: Vec<Expression>,
+    },
+    /// `target += value`: a compound assignment (`-=`, `..=`, `<<=`, the xor assignment `~=`,
+    /// ...) of a single name, field or index.
+    CompoundAssignment {
+        /// The assigned name, field or index.
+        target: Expression,
+        /// The operator, `=` included (`+=`).
+        operator: Token,
+        /// The value combined with the target.
+        value: Expression,
     },
     /// A function or method call standing as a statement; always a call expression.
     Call(Expression),
@@ -181,22 +192,53 @@ pub struct FunctionName {
 }
 
 /// A function: the parameter list and body shared by every function form.
+///
+/// A short function (`|a, b| -> a + b`, `a -> a`, `|a| -> do ... end`) is a function too: its
+/// `keyword` is its first token (the opening `|`, or its only parameter), `open` and `close` are
+/// the bars around the parameters (both the parameter for `a -> e`), and an expression body is a
+/// block holding one [`StatementKind::Return`] of the expression whose keyword is the `->`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-    /// The `function` keyword.
+    /// The `function` keyword, or the first token of a short function.
     pub keyword: Token,
     /// The named parameters, without the implicit `self` of a method.
     pub parameters: Vec<Token>,
     /// The `...` ending the parameter list, if any.
     pub vararg: Option<Token>,
-    /// The `(` of the parameter list.
+    /// The `(` of the parameter list, or the token opening the parameters of a short function.
     pub open: Token,
-    /// The `)` of the parameter list.
+    /// The `)` of the parameter list, or the token closing the parameters of a short function.
     pub close: Token,
     /// The body.
     pub body: Block,
-    /// The closing `end`.
+    /// The closing `end`, or the last token of the expression of a short function.
     pub end: Token,
+    /// How the function is written.
+    pub form: FunctionForm,
+}
+
+/// How a function is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionForm {
+    /// `function(a) ... end`, anonymous or defined by a statement.
+    Long,
+    /// A short function returning one expression: `|a, b| -> a + b`, `a -> a`, `|| -> 1`.
+    Expression {
+        /// The `->`.
+        arrow: Token,
+    },
+    /// A short function with a block body: `|a| -> do ... end`.
+    Block {
+        /// The `->`.
+        arrow: Token,
+    },
+}
+
+impl FunctionForm {
+    /// Whether the function is a short function.
+    pub fn is_short(self) -> bool {
+        self != FunctionForm::Long
+    }
 }
 
 /// An expression and the bytes it covers.
@@ -265,6 +307,52 @@ pub enum ExpressionKind {
         /// The arguments.
         arguments: Arguments,
     },
+    /// `object?.name`: `nil` when `object` is `nil`, skipping the rest of the chain.
+    SafeField {
+        /// The indexed expression.
+        object: Box<Expression>,
+        /// The field name.
+        name: Token,
+    },
+    /// `object?.[key]`.
+    SafeIndex {
+        /// The indexed expression.
+        object: Box<Expression>,
+        /// The key.
+        key: Box<Expression>,
+    },
+    /// `callee?.(arguments)`, also with a string or table argument.
+    SafeCall {
+        /// The called expression.
+        callee: Box<Expression>,
+        /// The arguments.
+        arguments: Arguments,
+    },
+    /// `object?.:name(arguments)` (skipped when `object` is `nil`) or `object:name?.(arguments)`
+    /// (skipped when the method is `nil`).
+    SafeMethodCall {
+        /// The receiver.
+        object: Box<Expression>,
+        /// The method name.
+        name: Token,
+        /// The arguments.
+        arguments: Arguments,
+        /// The `?.`, before the `:` or after the method name.
+        navigation: Token,
+    },
+    /// `condition ? consequent : alternative`.
+    Ternary {
+        /// The tested expression.
+        condition: Box<Expression>,
+        /// The `?`.
+        question: Token,
+        /// The value when the condition is neither `false` nor `nil`.
+        consequent: Box<Expression>,
+        /// The `:`.
+        colon: Token,
+        /// The value otherwise.
+        alternative: Box<Expression>,
+    },
     /// A unary operation (`-`, `#`, `not`, `!`, `~`).
     Unary {
         /// The operator.
@@ -272,7 +360,7 @@ pub enum ExpressionKind {
         /// The operand.
         operand: Box<Expression>,
     },
-    /// A binary operation.
+    /// A binary operation, `??` and the bit operators included.
     Binary {
         /// The operator.
         operator: Token,
@@ -391,8 +479,35 @@ impl Expression {
     pub fn is_call(&self) -> bool {
         matches!(
             self.kind,
-            ExpressionKind::Call { .. } | ExpressionKind::MethodCall { .. }
+            ExpressionKind::Call { .. }
+                | ExpressionKind::MethodCall { .. }
+                | ExpressionKind::SafeCall { .. }
+                | ExpressionKind::SafeMethodCall { .. }
         )
+    }
+
+    /// Whether the expression is a name, field or index that safe navigation may skip
+    /// (`a?.b`, `a?.b.c`, `a?.[k]`, `f?.().x`).
+    pub fn is_safe_navigation(&self) -> bool {
+        match &self.kind {
+            ExpressionKind::SafeField { .. }
+            | ExpressionKind::SafeIndex { .. }
+            | ExpressionKind::SafeCall { .. }
+            | ExpressionKind::SafeMethodCall { .. } => true,
+            ExpressionKind::Field { object, .. }
+            | ExpressionKind::Index { object, .. }
+            | ExpressionKind::MethodCall { object, .. } => object.is_safe_navigation(),
+            ExpressionKind::Call { callee, .. } => callee.is_safe_navigation(),
+            _ => false,
+        }
+    }
+
+    /// The function of a function expression, long or short.
+    pub fn as_function(&self) -> Option<&Function> {
+        match &self.kind {
+            ExpressionKind::Function(function) => Some(function),
+            _ => None,
+        }
     }
 
     /// Whether the expression can produce a number of values other than one: a call or `...`.
@@ -497,6 +612,10 @@ fn walk_statement<'t>(statement: &'t Statement, visitor: &mut impl Visitor<'t>) 
             walk_expressions(targets, visitor);
             walk_expressions(values, visitor);
         }
+        StatementKind::CompoundAssignment { target, value, .. } => {
+            walk_expression(target, visitor);
+            walk_expression(value, visitor);
+        }
         StatementKind::Call(call) => walk_expression(call, visitor),
         StatementKind::Do { body } => walk(body, visitor),
         StatementKind::While { condition, body } => {
@@ -577,20 +696,36 @@ fn walk_expression<'t>(expression: &'t Expression, visitor: &mut impl Visitor<'t
         }
         ExpressionKind::Markup(splices) => walk_expressions(splices, visitor),
         ExpressionKind::Parenthesized(inner) => walk_expression(inner, visitor),
-        ExpressionKind::Field { object, .. } => walk_expression(object, visitor),
-        ExpressionKind::Index { object, key } => {
+        ExpressionKind::Field { object, .. } | ExpressionKind::SafeField { object, .. } => {
+            walk_expression(object, visitor);
+        }
+        ExpressionKind::Index { object, key } | ExpressionKind::SafeIndex { object, key } => {
             walk_expression(object, visitor);
             walk_expression(key, visitor);
         }
-        ExpressionKind::Call { callee, arguments } => {
+        ExpressionKind::Call { callee, arguments }
+        | ExpressionKind::SafeCall { callee, arguments } => {
             walk_expression(callee, visitor);
             walk_expressions(&arguments.values, visitor);
         }
         ExpressionKind::MethodCall {
             object, arguments, ..
+        }
+        | ExpressionKind::SafeMethodCall {
+            object, arguments, ..
         } => {
             walk_expression(object, visitor);
             walk_expressions(&arguments.values, visitor);
+        }
+        ExpressionKind::Ternary {
+            condition,
+            consequent,
+            alternative,
+            ..
+        } => {
+            walk_expression(condition, visitor);
+            walk_expression(consequent, visitor);
+            walk_expression(alternative, visitor);
         }
         ExpressionKind::Unary { operand, .. } => walk_expression(operand, visitor),
         ExpressionKind::Binary { left, right, .. } => {
@@ -634,6 +769,12 @@ fn is_structural(kind: TokenKind) -> bool {
                 | TokenKind::Dots
                 | TokenKind::Bang
                 | TokenKind::Tilde
+                | TokenKind::Bar
+                | TokenKind::Arrow
+                | TokenKind::Question
+                | TokenKind::TernaryColon
+                | TokenKind::SafeNav
+                | TokenKind::CompoundAssign
                 | TokenKind::Space
                 | TokenKind::Tab
                 | TokenKind::Newline
@@ -648,12 +789,13 @@ fn starts_suffixed(kind: TokenKind) -> bool {
         || (!is_structural(kind) && !kind.is_string() && kind != TokenKind::Number)
 }
 
-/// The left and right binding power of a binary operator, as in Lua's precedence table: `or`,
-/// `and`, comparisons, `..` (right associative), `+ -`, `* / %`, then `^` (right associative)
-/// above the unary operators.
-fn binary_precedence(kind: TokenKind) -> Option<(u8, u8)> {
+/// The left and right binding power of a binary operator, as in LuaJIT's priority table: `or`
+/// and `??`, `and`, comparisons, `|`, `~`, `&`, the shifts, `..` (right associative), `+ -`,
+/// `* / %`, then `^` (right associative) above the unary operators. A ternary binds looser than
+/// all of them.
+pub fn binary_precedence(kind: TokenKind) -> Option<(u8, u8)> {
     Some(match kind {
-        TokenKind::Or | TokenKind::OrOr => (1, 1),
+        TokenKind::Or | TokenKind::OrOr | TokenKind::Coalesce => (1, 1),
         TokenKind::And | TokenKind::AndAnd => (2, 2),
         TokenKind::Eq
         | TokenKind::Ne
@@ -661,16 +803,20 @@ fn binary_precedence(kind: TokenKind) -> Option<(u8, u8)> {
         | TokenKind::Le
         | TokenKind::Gt
         | TokenKind::Ge => (3, 3),
-        TokenKind::Concat => (5, 4),
-        TokenKind::Plus | TokenKind::Minus => (6, 6),
-        TokenKind::Star | TokenKind::Slash | TokenKind::Percent => (7, 7),
-        TokenKind::Caret => (10, 9),
+        TokenKind::Pipe => (4, 4),
+        TokenKind::Tilde => (5, 5),
+        TokenKind::Ampersand => (6, 6),
+        TokenKind::Shl | TokenKind::Shr | TokenKind::Sar => (7, 7),
+        TokenKind::Concat => (9, 8),
+        TokenKind::Plus | TokenKind::Minus => (10, 10),
+        TokenKind::Star | TokenKind::Slash | TokenKind::Percent => (11, 11),
+        TokenKind::Caret => (14, 13),
         _ => return None,
     })
 }
 
 /// Binding power of the operand of a unary operator.
-const UNARY_PRECEDENCE: u8 = 8;
+pub const UNARY_PRECEDENCE: u8 = 12;
 
 /// Whether `kind` is a unary operator.
 fn is_unary_operator(kind: TokenKind) -> bool {
@@ -812,7 +958,7 @@ impl Parser<'_> {
             let returns = matches!(statement.kind, StatementKind::Return { .. });
             statements.push(statement);
             if returns {
-                if let Some(semicolon) = self.eat(TokenKind::Semicolon) {
+                while let Some(semicolon) = self.eat(TokenKind::Semicolon) {
                     statements.push(Statement {
                         kind: StatementKind::Empty,
                         range: semicolon.range(),
@@ -882,6 +1028,7 @@ impl Parser<'_> {
                 };
                 StatementKind::Return { keyword, values }
             }
+            TokenKind::Const => self.local_statement()?,
             TokenKind::Do => {
                 let keyword = self.bump()?;
                 let body = self.block()?;
@@ -1001,7 +1148,7 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses `local function f() ... end` or `local a, b = ...`.
+    /// Parses `local function f() ... end` or `local a, b = ...`, or the same with `const`.
     fn local_statement(&mut self) -> Parse<StatementKind> {
         let local = self.bump()?;
         if let Some(keyword) = self.eat(TokenKind::Function) {
@@ -1037,6 +1184,16 @@ impl Parser<'_> {
             return Err(self.unexpected(token, "a statement"));
         }
         let first = self.suffixed_expression()?;
+        if self.check(TokenKind::CompoundAssign) {
+            Self::check_target(&first, true)?;
+            let operator = self.bump()?;
+            let value = self.expression()?;
+            return Ok(StatementKind::CompoundAssignment {
+                target: first,
+                operator,
+                value,
+            });
+        }
         if !matches!(self.peek(), Some(TokenKind::Assign | TokenKind::Comma)) {
             if first.is_call() {
                 return Ok(StatementKind::Call(first));
@@ -1064,19 +1221,7 @@ impl Parser<'_> {
             targets.push(self.suffixed_expression()?);
         }
         for target in &targets {
-            if !matches!(
-                target.kind,
-                ExpressionKind::Name(_)
-                    | ExpressionKind::Field { .. }
-                    | ExpressionKind::Index { .. }
-            ) {
-                return Err(ParseError {
-                    range: target.range.clone(),
-                    message: "Cannot assign to this expression; expected a name, field or index."
-                        .to_owned(),
-                    too_deep: false,
-                });
-            }
+            Self::check_target(target, targets.len() == 1)?;
         }
         let assign = self.expect(TokenKind::Assign, "`=`")?;
         let values = self.expression_list()?;
@@ -1084,6 +1229,28 @@ impl Parser<'_> {
             targets,
             assign,
             values,
+        })
+    }
+
+    /// Fails unless `target` can be assigned to: a name, a field or an index, which may follow
+    /// safe navigation (`a?.b = 1`, skipped when `a` is `nil`) when it is the `only` target.
+    fn check_target(target: &Expression, only: bool) -> Parse<()> {
+        let assignable = match target.kind {
+            ExpressionKind::Name(_) => true,
+            ExpressionKind::Field { .. } | ExpressionKind::Index { .. } => {
+                only || !target.is_safe_navigation()
+            }
+            ExpressionKind::SafeField { .. } | ExpressionKind::SafeIndex { .. } => only,
+            _ => false,
+        };
+        if assignable {
+            return Ok(());
+        }
+        Err(ParseError {
+            range: target.range.clone(),
+            message: "Cannot assign to this expression; expected a name, field or index."
+                .to_owned(),
+            too_deep: false,
         })
     }
 
@@ -1120,6 +1287,70 @@ impl Parser<'_> {
             close,
             body,
             end,
+            form: FunctionForm::Long,
+        })
+    }
+
+    /// Parses a short function starting at the cursor: `|a, b| -> ...`, `|| -> ...` or
+    /// `a -> ...`, with an expression or a `do ... end` body.
+    fn short_function(&mut self) -> Parse<Function> {
+        self.descend()?;
+        let open = self.bump()?;
+        let mut parameters = Vec::new();
+        let mut vararg = None;
+        let close = if open.kind == TokenKind::Name {
+            parameters.push(open);
+            open
+        } else {
+            if !self.check(TokenKind::Bar) {
+                loop {
+                    if let Some(dots) = self.eat(TokenKind::Dots) {
+                        vararg = Some(dots);
+                        break;
+                    }
+                    parameters.push(self.expect(TokenKind::Name, "a parameter name or `...`")?);
+                    if self.eat(TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.expect(TokenKind::Bar, "`|` to close the parameter list")?
+        };
+        let arrow = self.expect(TokenKind::Arrow, "`->`")?;
+        let (body, end, form) = match self.eat(TokenKind::Do) {
+            Some(keyword) => {
+                let body = self.block()?;
+                let end = self.expect_end(&keyword)?;
+                (body, end, FunctionForm::Block { arrow })
+            }
+            None => {
+                let value = self.expression()?;
+                let range = value.range.clone();
+                let end = self.tokens[self.pos - 1];
+                let statement = Statement {
+                    kind: StatementKind::Return {
+                        keyword: arrow,
+                        values: vec![value],
+                    },
+                    range: range.clone(),
+                };
+                let body = Block {
+                    statements: vec![statement],
+                    range,
+                };
+                (body, end, FunctionForm::Expression { arrow })
+            }
+        };
+        self.ascend();
+        Ok(Function {
+            keyword: open,
+            parameters,
+            vararg,
+            open,
+            close,
+            body,
+            end,
+            form,
         })
     }
 
@@ -1132,9 +1363,35 @@ impl Parser<'_> {
         Ok(list)
     }
 
-    /// Parses an expression.
+    /// Parses an expression: binary operations, optionally followed by the `? a : b` of a
+    /// ternary, which binds looser than every operator and associates to the right.
     fn expression(&mut self) -> Parse<Expression> {
-        self.binary_expression(0)
+        let condition = self.binary_expression(0)?;
+        if !self.check(TokenKind::Question) {
+            return Ok(condition);
+        }
+        self.ternary(Box::new(condition))
+    }
+
+    /// Parses the `? consequent : alternative` after `condition`.
+    #[inline(never)]
+    fn ternary(&mut self, condition: Box<Expression>) -> Parse<Expression> {
+        let question = self.bump()?;
+        self.descend()?;
+        let consequent = Box::new(self.expression()?);
+        let colon = self.expect(TokenKind::TernaryColon, "`:` of the ternary")?;
+        let alternative = Box::new(self.expression()?);
+        self.ascend();
+        Ok(Expression {
+            range: condition.range.start..alternative.range.end,
+            kind: ExpressionKind::Ternary {
+                condition,
+                question,
+                consequent,
+                colon,
+                alternative,
+            },
+        })
     }
 
     /// Parses an expression whose binary operators bind tighter than `limit`.
@@ -1208,6 +1465,18 @@ impl Parser<'_> {
                 let table = self.table()?;
                 return Ok(self.expression_from(ExpressionKind::Table(table), token.start));
             }
+            TokenKind::Bar => {
+                let function = self.short_function()?;
+                return Ok(
+                    self.expression_from(ExpressionKind::Function(Box::new(function)), token.start)
+                );
+            }
+            TokenKind::Name if self.peek_at(1) == Some(TokenKind::Arrow) => {
+                let function = self.short_function()?;
+                return Ok(
+                    self.expression_from(ExpressionKind::Function(Box::new(function)), token.start)
+                );
+            }
             TokenKind::Markup => return self.markup(),
             _ => return self.suffixed_expression(),
         };
@@ -1268,6 +1537,11 @@ impl Parser<'_> {
             _ => return Err(self.unexpected(token, "an expression")),
         };
         loop {
+            if let Some(navigation) = self.eat(TokenKind::SafeNav) {
+                let kind = self.safe_suffix(expression, navigation)?;
+                expression = self.expression_from(kind, start);
+                continue;
+            }
             let kind = match self.peek() {
                 Some(TokenKind::Dot) => {
                     self.bump()?;
@@ -1289,11 +1563,21 @@ impl Parser<'_> {
                 Some(TokenKind::Colon) if self.peek_at(1) != Some(TokenKind::Colon) => {
                     self.bump()?;
                     let name = self.expect(TokenKind::Name, "a method name")?;
-                    let arguments = self.call_arguments()?;
-                    ExpressionKind::MethodCall {
-                        object: Box::new(expression),
-                        name,
-                        arguments,
+                    if let Some(navigation) = self.eat(TokenKind::SafeNav) {
+                        let arguments = self.call_arguments()?;
+                        ExpressionKind::SafeMethodCall {
+                            object: Box::new(expression),
+                            name,
+                            arguments,
+                            navigation,
+                        }
+                    } else {
+                        let arguments = self.call_arguments()?;
+                        ExpressionKind::MethodCall {
+                            object: Box::new(expression),
+                            name,
+                            arguments,
+                        }
                     }
                 }
                 Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String { .. }) => {
@@ -1307,6 +1591,45 @@ impl Parser<'_> {
             };
             expression = self.expression_from(kind, start);
         }
+    }
+
+    /// Parses what follows the `?.` (`navigation`) after `object`: a field name, an index, call
+    /// arguments or a method call.
+    fn safe_suffix(&mut self, object: Expression, navigation: Token) -> Parse<ExpressionKind> {
+        let object = Box::new(object);
+        Ok(match self.peek() {
+            Some(TokenKind::Name) => ExpressionKind::SafeField {
+                object,
+                name: self.bump()?,
+            },
+            Some(TokenKind::LBracket) => {
+                self.bump()?;
+                let key = self.expression()?;
+                self.expect(TokenKind::RBracket, "`]`")?;
+                ExpressionKind::SafeIndex {
+                    object,
+                    key: Box::new(key),
+                }
+            }
+            Some(TokenKind::Colon) => {
+                self.bump()?;
+                let name = self.expect(TokenKind::Name, "a method name")?;
+                let arguments = self.call_arguments()?;
+                ExpressionKind::SafeMethodCall {
+                    object,
+                    name,
+                    arguments,
+                    navigation,
+                }
+            }
+            Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String { .. }) => {
+                ExpressionKind::SafeCall {
+                    callee: object,
+                    arguments: self.call_arguments()?,
+                }
+            }
+            _ => return Err(self.error("a field name, `[`, `:` or arguments after `?.`")),
+        })
     }
 
     /// Parses the arguments of a call: `(...)`, a table or a string.
@@ -1461,6 +1784,364 @@ mod tests {
             shape(src, &values[0]),
             "(a or (b and (c == (d .. (e .. (f + (g * (-(h ^ i)))))))))"
         );
+    }
+
+    /// The shape of `expression` with every operation in parentheses.
+    fn shape(src: &str, expression: &Expression) -> String {
+        match &expression.kind {
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => format!(
+                "({} {} {})",
+                shape(src, left),
+                &src[operator.range()],
+                shape(src, right)
+            ),
+            ExpressionKind::Unary { operator, operand } => {
+                format!("({}{})", &src[operator.range()], shape(src, operand))
+            }
+            ExpressionKind::Ternary {
+                condition,
+                consequent,
+                alternative,
+                ..
+            } => format!(
+                "({} ? {} : {})",
+                shape(src, condition),
+                shape(src, consequent),
+                shape(src, alternative)
+            ),
+            _ => src[expression.range.clone()].to_owned(),
+        }
+    }
+
+    /// The shape of the value of the assignment `src` consists of.
+    fn value_shape(src: &str) -> String {
+        let block = parsed(src);
+        let StatementKind::Assignment { values, .. } = &block.statements[0].kind else {
+            panic!("assignment");
+        };
+        shape(src, &values[0])
+    }
+
+    #[test]
+    fn extended_operators_follow_luajit_priorities() {
+        assert_eq!(
+            value_shape("x = a or b ?? c and d == e | f ~ g & h << i .. j + k * -l ^ m\n"),
+            "((a or b) ?? (c and (d == (e | (f ~ (g & (h << (i .. (j + (k * (-(l ^ m))))))))))))"
+        );
+        assert_eq!(
+            value_shape("x = 1 << 2 >> 3 ~>> 4\n"),
+            "(((1 << 2) >> 3) ~>> 4)"
+        );
+        assert_eq!(value_shape("x = ~a & ~~b\n"), "((~a) & (~(~b)))");
+        assert_eq!(value_shape("x = 5 & 3 == 1\n"), "((5 & 3) == 1)");
+    }
+
+    #[test]
+    fn ternaries_bind_loosest_and_to_the_right() {
+        assert_eq!(
+            value_shape("x = 1 + 1 == 2 ? 'y' : 'n'\n"),
+            "(((1 + 1) == 2) ? 'y' : 'n')"
+        );
+        assert_eq!(
+            value_shape("x = a ? b : c ? d : e\n"),
+            "(a ? b : (c ? d : e))"
+        );
+        assert_eq!(
+            value_shape("x = a ? b ? c : 1 : e\n"),
+            "(a ? (b ? c : 1) : e)"
+        );
+        assert_eq!(
+            error("x = a ? b ? c : d : e\n"),
+            (
+                2,
+                1,
+                "Unexpected end of file; expected arguments.".to_owned()
+            )
+        );
+        assert_eq!(
+            value_shape("x = a or b ? c and d : e ?? f\n"),
+            "((a or b) ? (c and d) : (e ?? f))"
+        );
+        assert_eq!(
+            value_shape("x = c ? (o:m()) : o:n()\n"),
+            "(c ? (o:m()) : o:n())"
+        );
+        assert_eq!(
+            error("x = c ? 1\n"),
+            (
+                2,
+                1,
+                "Unexpected end of file; expected `:` of the ternary.".to_owned()
+            )
+        );
+        assert_eq!(
+            error("x = c ? o:m() : 2\n"),
+            (1, 17, "Unexpected `2`; expected a method name.".to_owned())
+        );
+    }
+
+    #[test]
+    fn extended_syntax_parses() {
+        parsed("local a = { b = nil }\nprint(a?.b?.c, a.x?.y, a?.[1], f?.(1), o?.:m(), o:m?.())\n");
+        parsed("print(a?.'s', a?.{}, a ?? b, ~5, 5 & 3 | 1 ~ 2 << 1 >> 1 ~>> 1)\n");
+        parsed("x += 1 x -= 1 x *= 2 x /= 2 x %= 2 x ..= 's' x &= 1 x |= 1\n");
+        parsed("x <<= 1 x >>= 1 x ~>>= 1 x ~= 1 t.x += 1 t[k] ..= 'a' a?.b = 1 a?.b += 1\n");
+        parsed("const x = 1\nconst a, b = 1, 2\nconst function f() end\nconst = 3\n");
+        parsed("local f = |a, b| -> a + b\nf = x -> x * 2\nf = || -> 7\nf = | | -> 7\n");
+        parsed("f = |...| -> select('#', ...)\nf = |a, ...| -> do return a end\n");
+        parsed("print(1_000, 0x_FF, '\\u{48}')\n;; local a = 1;; print(a);;\nreturn;;\n");
+    }
+
+    #[test]
+    fn accepts_what_luajit_accepts() {
+        let cases: &[(&str, bool)] = &[
+            ("x = a ? b : c", true),
+            ("x = a ? b ? c : 1 : e", true),
+            ("x = a ? b ? c : d : e", false),
+            ("x = a ? o:m() : 2", false),
+            ("x = a ? (o:m()) : o:n()", true),
+            ("x = a ? 1 : o:m() .. 'x'", true),
+            ("x = a ? 1 : o:m() : 2", false),
+            ("x = a ? f'x' : 2", true),
+            ("x = a ? f'x':m() : 2", false),
+            ("x = a ? (f'x':m()) : 2", true),
+            ("x = a ? b ? 1 : f'x':m() : 3", false),
+            ("x = a ? b ? 1 : {} : 3", true),
+            ("x = a ? || -> c ? 1 : o:m() : 3", false),
+            ("x = a ? || -> o:m() : 3", false),
+            ("x = a ? || -> (o:m()) : 3", true),
+            ("x = a ? function() return o:m() end : 3", true),
+            ("x = a ? |o| -> do return o:m() end : 3", true),
+            ("x = a ? { o:m() } : 3", true),
+            ("x = a ? t[o:m()] : 3", true),
+            ("x = c ? 1 : d ? 2 : 3", true),
+            ("x = (c ? 1 : 2) + 1", true),
+            ("x = 1 + c ? 1 : 2", true),
+            ("x = c ? 1 : 2 + 3", true),
+            ("if c ? a : b then end", true),
+            ("while c ? a : b do end", true),
+            ("repeat until c ? a : b", true),
+            ("for i = c ? 1 : 2, 3 do end", true),
+            (
+                "local t = { c ? 1 : 2, a = c ? 3 : 4, [c ? 5 : 6] = 7 }",
+                true,
+            ),
+            ("f(c ? 1 : 2, c ? 3 : 4)", true),
+            ("x = a?.b", true),
+            ("x = a?.b.c", true),
+            ("x = a?.[1]", true),
+            ("x = a?.(1)", true),
+            ("x = a?.:m()", true),
+            ("x = a:m?.()", true),
+            ("x = a?.'s'", true),
+            ("x = a?.{}", true),
+            ("x = a?.b?.c?.d", true),
+            ("a?.b = 1", true),
+            ("a?.b.c = 1", true),
+            ("a?.[1] = 1", true),
+            ("a?.b, c = 1, 2", false),
+            ("a, b?.c = 1, 2", false),
+            ("a?.b += 1", true),
+            ("f?.()", true),
+            ("o?.:m()", true),
+            ("o:m?.()", true),
+            ("x = a ?? b", true),
+            ("x = a ?? b ?? c", true),
+            ("x = a ?? b or c", true),
+            ("x = a or b ?? c", true),
+            ("x += 1", true),
+            ("x -= 1", true),
+            ("x *= 1", true),
+            ("x /= 1", true),
+            ("x %= 1", true),
+            ("x ..= 's'", true),
+            ("x &= 1", true),
+            ("x |= 1", true),
+            ("x <<= 1", true),
+            ("x >>= 1", true),
+            ("x ~>>= 1", true),
+            ("x ~= 1", true),
+            ("x ^= 2", false),
+            ("x + = 1", false),
+            ("x != 1", false),
+            ("t.x += 1", true),
+            ("t[1] += 1", true),
+            ("t[k].y ..= 'z'", true),
+            ("f().x += 1", true),
+            ("f() += 1", false),
+            ("x, y += 1", false),
+            ("x += 1, 2", false),
+            ("const x = 1", true),
+            ("const x, y = 1, 2", true),
+            ("const function f() end", true),
+            ("const = 1", true),
+            ("local const = 1", true),
+            ("print(const)", true),
+            ("const x", true),
+            ("f = |a, b| -> a + b", true),
+            ("f = x -> x", true),
+            ("f = || -> 1", true),
+            ("f = | | -> 1", true),
+            ("f = |...| -> ...", true),
+            ("f = |a, ...| -> a", true),
+            ("f = |a| -> do return a end", true),
+            ("f = |a| -> a, 2", true),
+            ("f = |a,| -> a", false),
+            ("f = |a b| -> a", false),
+            ("f = |a| a", false),
+            ("f = a, b -> a", true),
+            ("x -> x", false),
+            ("f(|a| -> a + 1, 2)", true),
+            ("f(x -> x)", true),
+            ("x = (x -> x)(1)", true),
+            ("x = || -> do end", true),
+            ("x = 1_000", true),
+            ("x = 0x_FF", true),
+            ("x = 1e1_0", true),
+            ("x = 1_0.5", true),
+            ("x = '\\u{48}'", true),
+            (";; x = 1;;", true),
+            ("return;;", true),
+            ("do ; end", true),
+            ("local a = 1;;; local b = 2", true),
+            ("x = ~a", true),
+            ("x = a ~ b", true),
+            ("x = a & b | c ~ d", true),
+            ("x = 1 << 2 >> 3 ~>> 4", true),
+            ("x = a ~> b", false),
+            ("x = a & & b", false),
+            ("x = - ~ a", true),
+            ("x = ~ - a", true),
+            ("x = a::b", false),
+            ("for k in f, || -> do return 1 end do end", true),
+            ("x = c ? |a| -> a : 2", true),
+            ("x = c ? a -> a : 2", true),
+            ("x = f(1) ? 2 : 3", true),
+            ("x = {} ? 1 : 2", true),
+            ("x = c ? 1 : nil", true),
+            ("x = not c ? 1 : 2", true),
+            ("x = #t > 0 ? t[1] : nil", true),
+            ("x = a and b ? c : d", true),
+        ];
+        for (src, accepted) in cases {
+            let source = Source::new("t.lua", format!("{src}\n"));
+            assert_eq!(parse(&source).is_ok(), *accepted, "{src}");
+        }
+    }
+
+    #[test]
+    fn compound_assignments() {
+        let src = "t.x <<= 3 + 1\nx ~= 1\n";
+        let block = parsed(src);
+        let found: Vec<(String, String, String)> = block
+            .statements
+            .iter()
+            .map(|statement| match &statement.kind {
+                StatementKind::CompoundAssignment {
+                    target,
+                    operator,
+                    value,
+                } => (
+                    src[target.range.clone()].to_owned(),
+                    src[operator.range()].to_owned(),
+                    src[value.range.clone()].to_owned(),
+                ),
+                _ => panic!("compound assignment"),
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("t.x".to_owned(), "<<=".to_owned(), "3 + 1".to_owned()),
+                ("x".to_owned(), "~=".to_owned(), "1".to_owned())
+            ]
+        );
+        assert_eq!(
+            error("f() += 1\n"),
+            (
+                1,
+                1,
+                "Cannot assign to this expression; expected a name, field or index.".to_owned()
+            )
+        );
+        assert_eq!(
+            error("a, b?.c = 1, 2\n"),
+            (
+                1,
+                4,
+                "Cannot assign to this expression; expected a name, field or index.".to_owned()
+            )
+        );
+        assert_eq!(
+            error("x + = 1\n"),
+            (1, 3, "Unexpected `+`; expected `=` or a call.".to_owned())
+        );
+    }
+
+    #[test]
+    fn short_functions_are_functions() {
+        let src = "f(|a, b| -> a + b, x -> x, || -> 1, |a| -> do return a end)\n";
+        let block = parsed(src);
+        let StatementKind::Call(call) = &block.statements[0].kind else {
+            panic!("call");
+        };
+        let ExpressionKind::Call { arguments, .. } = &call.kind else {
+            panic!("call");
+        };
+        let found: Vec<(Vec<&str>, &str, &str, bool)> = arguments
+            .values
+            .iter()
+            .map(|value| {
+                let function = value.as_function().expect("function");
+                (
+                    function
+                        .parameters
+                        .iter()
+                        .map(|parameter| &src[parameter.range()])
+                        .collect(),
+                    &src[function.keyword.range()],
+                    &src[function.end.range()],
+                    matches!(function.form, FunctionForm::Expression { .. }),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (vec!["a", "b"], "|", "b", true),
+                (vec!["x"], "x", "x", true),
+                (vec![], "|", "1", true),
+                (vec!["a"], "|", "end", false)
+            ]
+        );
+        let function = arguments.values[0].as_function().expect("function");
+        let StatementKind::Return { keyword, values } = &function.body.statements[0].kind else {
+            panic!("return");
+        };
+        assert_eq!(&src[keyword.range()], "->");
+        assert_eq!(&src[values[0].range.clone()], "a + b");
+        assert_eq!(
+            error("x -> 1\n"),
+            (1, 3, "Unexpected `->`; expected `=` or a call.".to_owned())
+        );
+    }
+
+    #[test]
+    fn const_declarations_are_locals() {
+        let block = parsed("const x, y = 1, 2\nconst function f() end\n");
+        assert!(matches!(
+            &block.statements[0].kind,
+            StatementKind::Local { local, names, .. }
+                if local.kind == TokenKind::Const && names.len() == 2
+        ));
+        assert!(matches!(
+            &block.statements[1].kind,
+            StatementKind::LocalFunction { local, .. } if local.kind == TokenKind::Const
+        ));
     }
 
     #[test]

@@ -2,9 +2,12 @@
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
+use crate::readers::layout::spacing::is_binary_operator;
 use crate::token::TokenKind;
 
-/// Flags whitespace between `!` and its operand (`! x` should be `!x`).
+/// Flags whitespace between `!` and its operand (`! x` should be `!x`), and likewise after the
+/// bitwise not `~` (`~ x` should be `~x`); a `~` between two operands is the binary xor and left
+/// to `Layout/SpaceAroundOperators`.
 pub struct SpaceAfterNot;
 
 impl Reader for SpaceAfterNot {
@@ -13,14 +16,20 @@ impl Reader for SpaceAfterNot {
     }
 
     fn description(&self) -> &'static str {
-        "Checks for space between `!` and its operand."
+        "Checks for space between `!` (or a unary `~`) and its operand."
     }
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let tokens = &source.tokens;
-        for (index, token) in tokens.iter().enumerate() {
-            if token.kind != TokenKind::Bang {
+        for (code_index, &index) in source.code_token_indexes().iter().enumerate() {
+            let token = &tokens[index];
+            let unary = match token.kind {
+                TokenKind::Bang => true,
+                TokenKind::Tilde => !is_binary_operator(source, code_index),
+                _ => false,
+            };
+            if !unary {
                 continue;
             }
             let gap_end = tokens[index + 1..]
@@ -39,7 +48,10 @@ impl Reader for SpaceAfterNot {
             }
             ctx.add_offense_with_fix(
                 token.start..gap_end,
-                "Do not leave space between `!` and its operand.",
+                format!(
+                    "Do not leave space between `{}` and its operand.",
+                    source.text_of(token)
+                ),
                 vec![Edit::remove(token.end..gap_end)],
             );
         }
@@ -77,6 +89,18 @@ mod tests {
         expect_correction(READER, "if ! x then end\n", "if !x then end\n");
         expect_correction(READER, "y = ! \t (a)\n", "y = !(a)\n");
         expect_correction(READER, "y = ! ! x\n", "y = !!x\n");
+    }
+
+    #[test]
+    fn checks_the_bitwise_not() {
+        let message = "Do not leave space between `~` and its operand.";
+        expect_offense(READER, "y = ~ x\n", 1, 5, message);
+        expect_offense(READER, "y = a & ~ (b | c)\n", 1, 9, message);
+        expect_no_offenses(
+            READER,
+            "y = ~x & ~~z\ny = a ~ b\nx ~= 1\nif a ~= b then end\n",
+        );
+        expect_correction(READER, "y = ~ ~ x\n", "y = ~~x\n");
     }
 
     #[test]

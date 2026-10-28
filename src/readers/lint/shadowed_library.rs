@@ -50,7 +50,8 @@ impl Reader for ShadowedLibrary {
     }
 }
 
-/// Whether `declaration` is `local name = name` with nothing else on either side.
+/// Whether `declaration` is `local name = name` (or `const name = name`) with nothing else on
+/// either side.
 fn is_alias(source: &Source, tokens: &[Token], declaration: &Declaration) -> bool {
     if declaration.kind != DeclarationKind::Local {
         return false;
@@ -77,12 +78,15 @@ fn is_alias(source: &Source, tokens: &[Token], declaration: &Declaration) -> boo
                     | TokenKind::OrOr
                     | TokenKind::AndAnd
                     | TokenKind::Concat
+                    | TokenKind::SafeNav
+                    | TokenKind::Coalesce
+                    | TokenKind::Question
             )
         )
         && index
             .checked_sub(1)
             .and_then(|before| tokens.get(before))
-            .is_some_and(|before| before.kind == TokenKind::Local)
+            .is_some_and(|before| matches!(before.kind, TokenKind::Local | TokenKind::Const))
 }
 
 inventory::submit! { Registration(|| Box::new(ShadowedLibrary)) }
@@ -146,6 +150,21 @@ mod tests {
         expect_no_offenses(
             READER,
             "local list, system, render_target = 1\n-- local player\n",
+        );
+    }
+
+    #[test]
+    fn checks_constants_and_short_function_parameters() {
+        expect_no_offenses(READER, "const render = render\n");
+        expect_offense(READER, "const file = 1\n", 1, 7, &message("file"));
+        expect_offense(READER, "f(|player| -> player)\n", 1, 4, &message("player"));
+        expect_offense(READER, "f(table -> table)\n", 1, 3, &message("table"));
+        expect_offense(
+            READER,
+            "local render = render ?? x\n",
+            1,
+            7,
+            &message("render"),
         );
     }
 

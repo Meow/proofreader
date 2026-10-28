@@ -246,12 +246,24 @@ fn droppable(expression: &Expression) -> bool {
                 }
         }),
         ExpressionKind::Parenthesized(inner) => droppable(inner),
-        ExpressionKind::Field { object, .. } => droppable(object),
-        ExpressionKind::Index { object, key } => droppable(object) && droppable(key),
+        ExpressionKind::Field { object, .. } | ExpressionKind::SafeField { object, .. } => {
+            droppable(object)
+        }
+        ExpressionKind::Index { object, key } | ExpressionKind::SafeIndex { object, key } => {
+            droppable(object) && droppable(key)
+        }
         ExpressionKind::Unary { operand, .. } => droppable(operand),
         ExpressionKind::Binary { left, right, .. } => droppable(left) && droppable(right),
+        ExpressionKind::Ternary {
+            condition,
+            consequent,
+            alternative,
+            ..
+        } => droppable(condition) && droppable(consequent) && droppable(alternative),
         ExpressionKind::Call { .. }
         | ExpressionKind::MethodCall { .. }
+        | ExpressionKind::SafeCall { .. }
+        | ExpressionKind::SafeMethodCall { .. }
         | ExpressionKind::Markup(_)
         | ExpressionKind::Opaque => false,
     }
@@ -617,6 +629,36 @@ mod tests {
             READER,
             "local t = {}\nt.x = 1\nlocal u = {}\nu[1] = 2\nlocal m = {}\nfunction m.f() end\n\
              local o = {}\nfunction o:g() end\n",
+        );
+    }
+
+    #[test]
+    fn checks_constants_and_short_functions() {
+        expect_offenses(
+            READER,
+            "const a, b = 1, 2\nconst function f() end\nprint(b)\n",
+            &[
+                (1, 7, &unused("local variable", "a")),
+                (2, 16, &unused("local function", "f")),
+            ],
+        );
+        expect_offenses(
+            READER,
+            "print(|a, b| -> a, c -> 1, |d| -> do end)\n",
+            &[
+                (1, 11, &unused("parameter", "b")),
+                (1, 20, &unused("parameter", "c")),
+                (1, 29, &unused("parameter", "d")),
+            ],
+        );
+        expect_correction(
+            READER,
+            "const a, b = 1, 2\nprint(b, |x, y| -> x, z -> 1)\n",
+            "const b = 2\nprint(b, |x, _y| -> x, _z -> 1)\n",
+        );
+        expect_no_offenses(
+            READER,
+            "local x = 0\nx += 1\nconst y = 1\nprint(c ? y : y ?? 2)\n",
         );
     }
 

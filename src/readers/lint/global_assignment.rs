@@ -211,6 +211,11 @@ impl<'t> Visitor<'t> for Finder<'_, '_> {
                     }
                 }
             }
+            StatementKind::CompoundAssignment { target, .. } => {
+                if let ExpressionKind::Name(token) = &target.kind {
+                    self.record(token, statement.range.end);
+                }
+            }
             StatementKind::Function { name, function } if name.method.is_none() => {
                 if let [token] = name.path.as_slice() {
                     self.record(token, function.keyword.end);
@@ -291,6 +296,26 @@ mod tests {
             READER,
             "local count\nlocal function f(x)\n  local y\n  count, x, y = 1, 2, 3\n\
              t.field = 1\n  t[1] = 2\nend\nfunction GM:Think() end\nfunction lib.helper() end\n",
+        );
+    }
+
+    #[test]
+    fn compound_assignments_are_writes_that_read_first() {
+        expect_no_offenses(READER, "function f()\n  count += 1\nend\n");
+        assert_eq!(
+            found("count += 1\n", "AllowFileLevel: false"),
+            vec![(
+                1,
+                1,
+                "Assignment to the global `count`; declare it `local`.".to_owned()
+            )]
+        );
+        expect_offense(
+            READER,
+            "local f = || -> do\n  total = 0\nend\n",
+            2,
+            3,
+            &inside("total"),
         );
     }
 

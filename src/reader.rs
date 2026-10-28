@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use yaml_rust2::Yaml;
 
-use crate::config::ReaderConfig;
+use crate::config::{Config, ReaderConfig};
 use crate::offense::{Edit, Offense, Severity};
 use crate::source::Source;
 
@@ -51,6 +51,8 @@ pub struct Context<'a> {
     pub source: &'a Source,
     /// The effective configuration of the running reader for this file.
     pub config: &'a ReaderConfig,
+    /// The configuration of every reader for this file, when known.
+    configuration: Option<&'a Config>,
     offenses: Vec<Offense>,
     reader: &'static str,
     severity: Severity,
@@ -67,10 +69,24 @@ impl<'a> Context<'a> {
         Context {
             source,
             config,
+            configuration: None,
             offenses: Vec::new(),
             reader,
             severity,
         }
+    }
+
+    /// Lets the reader see the configuration of the other readers for this file.
+    pub fn with_configuration(mut self, configuration: &'a Config) -> Self {
+        self.configuration = Some(configuration);
+        self
+    }
+
+    /// The effective configuration of the reader `name` for this file, when the configuration of
+    /// the other readers is known.
+    pub fn reader_config(&self, name: &str) -> Option<&'a ReaderConfig> {
+        self.configuration
+            .map(|configuration| configuration.reader(name))
     }
 
     /// Name of the running reader.

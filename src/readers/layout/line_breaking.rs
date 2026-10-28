@@ -100,6 +100,17 @@ impl Line {
     fn innermost(&self, index: usize) -> Option<usize> {
         self.enclosing[index].last().copied()
     }
+
+    /// Whether token `index` lies between the bars around the parameters of a short function
+    /// (`|a, b|`), whose commas are no place for a line break.
+    fn in_parameters(&self, index: usize) -> bool {
+        self.tokens[..index]
+            .iter()
+            .filter(|token| token.kind == TokenKind::Bar)
+            .count()
+            % 2
+            == 1
+    }
 }
 
 /// Line breaks to insert and lines to re-indent.
@@ -162,7 +173,7 @@ impl Chain {
     fn of(kind: TokenKind) -> Option<Chain> {
         match kind {
             TokenKind::Comma => Some(Chain::Comma),
-            TokenKind::Or | TokenKind::OrOr => Some(Chain::Or),
+            TokenKind::Or | TokenKind::OrOr | TokenKind::Coalesce => Some(Chain::Or),
             TokenKind::And | TokenKind::AndAnd => Some(Chain::And),
             TokenKind::Concat => Some(Chain::Concat),
             TokenKind::Colon => Some(Chain::Method),
@@ -176,7 +187,11 @@ impl Chain {
             Chain::Concat => kind == TokenKind::Concat,
             Chain::Or | Chain::And => matches!(
                 kind,
-                TokenKind::And | TokenKind::Or | TokenKind::AndAnd | TokenKind::OrOr
+                TokenKind::And
+                    | TokenKind::Or
+                    | TokenKind::AndAnd
+                    | TokenKind::OrOr
+                    | TokenKind::Coalesce
             ),
             Chain::Comma | Chain::Method => false,
         }
@@ -484,6 +499,7 @@ impl<'a> LineBreaker<'a> {
                 .filter(|&index| {
                     line.tokens[index].kind == TokenKind::Comma
                         && line.innermost(index) == Some(group)
+                        && !line.in_parameters(index)
                         && index + 1 < end
                 })
                 .map(|index| (line.gap(index), item_indent)),
@@ -619,6 +635,9 @@ impl<'a> LineBreaker<'a> {
             .filter(|&next| self.structure.kind(next) == LineKind::Continuation);
         let mut best: Vec<(Chain, Range<usize>, usize)> = Vec::new();
         for index in assign.map_or(0, |assign| assign + 1)..limit {
+            if line.in_parameters(index) {
+                continue;
+            }
             let header = own
                 .filter(|header| {
                     header
@@ -909,6 +928,7 @@ fn ends_operand_chain(kind: TokenKind) -> bool {
             | TokenKind::Comma
             | TokenKind::Semicolon
             | TokenKind::Dot
+            | TokenKind::SafeNav
             | TokenKind::LBracket
             | TokenKind::LParen
     )

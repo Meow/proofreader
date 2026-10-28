@@ -12,14 +12,15 @@ use crate::source::Source;
 use crate::token::{Token, TokenKind};
 
 /// Flags strings built with `..` in a loop: an assignment `s = s .. x` (the target is the
-/// leftmost operand of the concatenation) or `s = x .. s` (the rightmost) inside the body of a
-/// `for`, `while` or `repeat` loop, where `s` is a name or a field chain over a name (`self.text`)
-/// declared outside the loop. Every such assignment copies the whole string built so far, so the
-/// loop takes quadratic time; collecting the parts in a table and calling `table.concat` copies
-/// them once. Targets declared inside the loop (locals of its body and loop variables, or fields
-/// of them) start over every iteration and are left alone, and so are loops in a function
-/// defined outside them. Each target is reported once per loop, at its first assignment, in the
-/// outermost loop of the function that it outlives. Files that do not parse are skipped.
+/// leftmost operand of the concatenation), `s = x .. s` (the rightmost) or `s ..= x` inside the
+/// body of a `for`, `while` or `repeat` loop, where `s` is a name or a field chain over a name
+/// (`self.text`) declared outside the loop. Every such assignment copies the whole string built
+/// so far, so the loop takes quadratic time; collecting the parts in a table and calling
+/// `table.concat` copies them once. Targets declared inside the loop (locals of its body and loop
+/// variables, or fields of them) start over every iteration and are left alone, and so are loops
+/// in a function defined outside them. Each target is reported once per loop, at its first
+/// assignment, in the outermost loop of the function that it outlives. Files that do not parse
+/// are skipped.
 pub struct ConcatInLoop;
 
 impl Reader for ConcatInLoop {
@@ -114,6 +115,9 @@ impl<'t> Visitor<'t> for Finder<'_> {
                     self.check(statement, target, value);
                 }
             }
+            StatementKind::CompoundAssignment {
+                target, operator, ..
+            } if self.source.text_of(operator) == "..=" => self.record(statement, target),
             _ => {}
         }
     }
@@ -123,12 +127,20 @@ impl Finder<'_> {
     /// Records the assignment `statement` of `value` to `target` when it builds a string
     /// declared outside a loop around it.
     fn check(&mut self, statement: &Statement, target: &Expression, value: &Expression) {
+        if target
+            .dotted_name(self.source)
+            .is_some_and(|name| builds(value, &name, self.source))
+        {
+            self.record(statement, target);
+        }
+    }
+
+    /// Records the `statement` appending to `target` when `target` is a name or field chain
+    /// declared outside a loop around it.
+    fn record(&mut self, statement: &Statement, target: &Expression) {
         let Some(name) = target.dotted_name(self.source) else {
             return;
         };
-        if !builds(value, &name, self.source) {
-            return;
-        }
         let Some(root) = root_name(target) else {
             return;
         };
@@ -229,6 +241,21 @@ mod tests {
             2,
             3,
             &message("out"),
+        );
+    }
+
+    #[test]
+    fn flags_concatenating_assignment() {
+        expect_offense(
+            READER,
+            "local s = ''\nfor i = 1, 10 do\n  s ..= i .. ','\nend\n",
+            3,
+            3,
+            &message("s"),
+        );
+        expect_no_offenses(
+            READER,
+            "local n = 0\nfor i = 1, 10 do\n  n += i\n  local t = ''\n  t ..= i\nend\n",
         );
     }
 

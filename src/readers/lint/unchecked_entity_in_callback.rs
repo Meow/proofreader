@@ -263,7 +263,8 @@ impl<'t> Visitor<'t> for Collector<'t> {
                     self.callbacks.push((function, name));
                 }
             }
-            ExpressionKind::MethodCall { object, name, .. } => {
+            ExpressionKind::MethodCall { object, name, .. }
+            | ExpressionKind::SafeMethodCall { object, name, .. } => {
                 if let ExpressionKind::Name(token) = &object.unparenthesized().kind {
                     if self.source.text_of(name) == "IsValid" {
                         self.checks.push(*token);
@@ -393,6 +394,28 @@ mod tests {
             2,
             38,
             &message("ent"),
+        );
+    }
+
+    #[test]
+    fn short_functions_are_callbacks() {
+        expect_offense(
+            READER,
+            "local function f(ent)\n  timer.Simple(1, || -> ent:Remove())\nend\n",
+            2,
+            25,
+            &message("ent"),
+        );
+        expect_offense(
+            READER,
+            "local function f(ent)\n  timer.Simple(1, || -> do\n    ent?.:Remove()\n  end)\nend\n",
+            3,
+            5,
+            &message("ent"),
+        );
+        expect_no_offenses(
+            READER,
+            "local function f(ent)\n  timer.Simple(1, || -> IsValid(ent) ? (ent:Remove()) : nil)\nend\n",
         );
     }
 

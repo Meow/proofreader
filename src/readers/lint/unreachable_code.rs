@@ -186,6 +186,18 @@ mod tests {
     }
 
     #[test]
+    fn looks_inside_short_function_blocks() {
+        expect_offense(
+            READER,
+            "f(|| -> do\n  error('x')\n  print(2)\nend)\n",
+            3,
+            3,
+            "Unreachable code after the `error` call on line 2.",
+        );
+        expect_no_offenses(READER, "f(|x| -> x, || -> error('x'))\nprint(1)\n");
+    }
+
+    #[test]
     fn flags_code_after_terminating_calls() {
         expect_offense(
             READER,

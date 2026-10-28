@@ -16,6 +16,8 @@
 # - players are called `actor`; deferred callbacks check `IsValid(actor)` like any entity
 # - blank lines around multi-line blocks, after guard clauses and between definitions
 # - Flux's cached util.get_material instead of Material in functions that run every frame
+# - the syntax extensions of LuaJIT 3.0 where they say the same in fewer words: `x += 1`,
+#   `a & b`, `c ? 'a' : 'b'`, `|a, b| -> a < b` and `1_000_000`
 
 Layout/IndentationStyle:
   EnforcedStyle: spaces
@@ -71,6 +73,22 @@ Style/DocumentationMethod:
 
 Style/IncompleteDocumentation:
   Enabled: true                            # not the default
+
+Style/CompoundAssignment:
+  Enabled: true                            # not the default
+
+Style/BitOperators:
+  Enabled: true                            # not the default
+
+Style/TernaryOperator:
+  Enabled: true                            # not the default
+
+Style/ShortFunction:
+  Enabled: true                            # not the default
+
+Style/NumericSeparators:
+  Enabled: true                            # not the default
+  MinDigits: 5
 
 Naming/VariableName:
   EnforcedStyle: snake_case

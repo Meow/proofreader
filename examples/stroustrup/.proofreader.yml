@@ -9,6 +9,8 @@
 # - {1, 2, 3} without spaces inside braces; calls always take parentheses: f("x"), f({1})
 # - snake_case names
 # - no blank-line rules beyond one blank line between function definitions
+# - plain Lua for stock Garry's Mod: none of the syntax extensions of LuaJIT 3.0 (`x += 1`,
+#   `c ? a : b`, `|a| -> a`, ...), which the fix turns into plain Lua where it can
 
 Layout/IndentationWidth:
   Width: 4
@@ -56,3 +58,6 @@ Style/CallParentheses:
 
 Style/DocumentationMethod:
   Enabled: false
+
+Lint/ExtendedSyntax:
+  Enabled: true                            # the LuaJIT of stock Garry's Mod rejects them

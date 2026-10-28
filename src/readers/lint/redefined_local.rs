@@ -156,6 +156,19 @@ mod tests {
     }
 
     #[test]
+    fn checks_constants_and_short_function_parameters() {
+        expect_offenses(
+            READER,
+            "local v = 1\nconst v = 2\nf(|v| -> v, v -> v)\nprint(v)\n",
+            &[
+                (2, 7, &message("v", 1)),
+                (3, 4, &message("v", 2)),
+                (3, 13, &message("v", 2)),
+            ],
+        );
+    }
+
+    #[test]
     fn flags_every_declaration_kind_in_nested_scopes() {
         expect_offenses(
             READER,

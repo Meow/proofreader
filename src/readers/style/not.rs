@@ -119,6 +119,15 @@ mod tests {
     }
 
     #[test]
+    fn looks_inside_the_extended_syntax() {
+        expect_correction(
+            READER,
+            "f(|x| -> not x, c ? not a : b)\n",
+            "f(|x| -> !x, c ? !a : b)\n",
+        );
+    }
+
+    #[test]
     fn accepts_bang_and_strings() {
         expect_no_offenses(READER, "if !x then end\n");
         expect_no_offenses(READER, "s = 'not x'\n-- not x\nnothing = notable\n");

@@ -13,7 +13,7 @@ use similar::TextDiff;
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::config::{Config, ConfigError, ConfigStore, ReaderConfig, absolute_path};
+use crate::config::{Config, ConfigError, ConfigStore, absolute_path};
 use crate::corrector;
 use crate::directive::Directives;
 use crate::offense::{Offense, Severity};
@@ -264,11 +264,13 @@ fn install_panic_filter() {
 pub fn investigate(
     reader: &dyn Reader,
     source: &Source,
-    config: &ReaderConfig,
+    configuration: &Config,
     severity: Severity,
 ) -> Result<Vec<Offense>, String> {
     install_panic_filter();
-    let mut ctx = Context::new(source, config, reader.name(), severity);
+    let config = configuration.reader(reader.name());
+    let mut ctx =
+        Context::new(source, config, reader.name(), severity).with_configuration(configuration);
     SILENT_PANICS.with(|flag| flag.set(true));
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| reader.investigate(&mut ctx)));
     SILENT_PANICS.with(|flag| flag.set(false));
@@ -337,13 +339,7 @@ pub fn inspect_source(
         let pass_source = current.as_ref().unwrap_or(source);
         let mut offenses = Vec::new();
         active.retain(|reader| {
-            let reader_config = config.reader(reader.name());
-            match investigate(
-                *reader,
-                pass_source,
-                reader_config,
-                config.severity_of(*reader),
-            ) {
+            match investigate(*reader, pass_source, config, config.severity_of(*reader)) {
                 Ok(found) => {
                     offenses.extend(found);
                     true
@@ -531,7 +527,7 @@ mod tests {
         let result = investigate(
             &Panicky,
             &source,
-            &ReaderConfig::default(),
+            &Config::defaults(Path::new(".")),
             Severity::Warning,
         );
         assert_eq!(result, Err("boom".to_owned()));

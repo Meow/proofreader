@@ -391,6 +391,24 @@ mod tests {
     }
 
     #[test]
+    fn breaks_the_extended_syntax_between_operands() {
+        expect_correction_with(
+            "return first_value ?? second_value ?? third_value\n",
+            "Max: 40",
+            "return first_value ?? second_value ??\n  third_value\n",
+        );
+        expect_correction_with(
+            "table.sort(scores, |left, right| -> left.points > right.points)\n",
+            "Max: 50",
+            "table.sort(\n  scores,\n  |left, right| -> left.points > right.points\n)\n",
+        );
+        expect_no_correction(
+            "local f = |alpha_value, beta_value| -> alpha_value\n",
+            "Max: 40",
+        );
+    }
+
+    #[test]
     fn breaks_a_line_in_several_passes() {
         expect_correction_with(
             "local result = combine(first_long_name..second_long_name..third_long_name, other)\n",
@@ -509,6 +527,14 @@ mod tests {
             (
                 "local result = combine(first_long_name..second_long_name..third_long_name, other)\n",
                 "Max: 50",
+            ),
+            (
+                "table.sort(scores, |left, right| -> left.points > right.points)\n",
+                "Max: 50",
+            ),
+            (
+                "return first_value ?? second_value ?? third_value\n",
+                "Max: 40",
             ),
         ];
         for (src, options) in samples {

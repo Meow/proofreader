@@ -8,6 +8,8 @@
 #   `Style/AndOr: EnforcedStyle: symbols` to prefer those), "a" .. b .. "c" with spaces around `..`
 # - lowerCamelCase locals, PascalCase functions and hooks
 # - no blank-line rules: function bodies may start and end with a blank line
+# - plain Lua for stock Garry's Mod: none of the syntax extensions of LuaJIT 3.0 (`x += 1`,
+#   `c ? a : b`, `|a| -> a`, ...), which the fix turns into plain Lua where it can
 
 Layout/IndentationStyle:
   EnforcedStyle: tabs
@@ -60,3 +62,6 @@ Naming/MethodName:
 
 Naming/FieldName:
   Enabled: false                           # field names follow no single convention here
+
+Lint/ExtendedSyntax:
+  Enabled: true                            # the LuaJIT of stock Garry's Mod rejects them

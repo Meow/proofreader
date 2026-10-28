@@ -6,7 +6,7 @@ use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::layout::block_structure::last_code_token_on_line;
 use crate::readers::lint::ast::{
-    Block, Expression, ExpressionKind, StatementKind, Visitor, parse, walk,
+    Block, Expression, ExpressionKind, Function, FunctionForm, StatementKind, Visitor, parse, walk,
 };
 use crate::source::Source;
 use crate::token::TokenKind;
@@ -25,7 +25,8 @@ use crate::token::TokenKind;
 /// statement, function definitions included (`end;`, `end);`). Lines ending in `then`, `do`,
 /// `else` or a function header end no statement and take none. A `;` may also end a statement in
 /// the middle of a line (`if x then return; end;`); any other statement semicolon (`then;`,
-/// `;;`) is flagged and removed. The fix inserts the missing `;` right after the statement,
+/// `;;`) is flagged and removed. The expression of a short function (`|a| -> a + 1`) is no
+/// statement and takes none. The fix inserts the missing `;` right after the statement,
 /// before a trailing comment. Files that do not parse are only checked for table separators.
 pub struct Semicolon;
 
@@ -104,13 +105,21 @@ impl Reader for Semicolon {
 /// Reports the statements of `block` (nested blocks included) that end a line without `;`, and
 /// returns the start offsets of the semicolons that end a statement, sorted.
 fn check_required(ctx: &mut Context, source: &Source, block: &Block) -> Vec<usize> {
-    struct Blocks<'t>(Vec<&'t Block>);
+    struct Blocks<'t>(Vec<&'t Block>, Option<&'t Block>);
     impl<'t> Visitor<'t> for Blocks<'t> {
+        fn enter_function(&mut self, function: &'t Function) {
+            if matches!(function.form, FunctionForm::Expression { .. }) {
+                self.1 = Some(&function.body);
+            }
+        }
+
         fn enter_block(&mut self, block: &'t Block) {
-            self.0.push(block);
+            if !self.1.take().is_some_and(|body| std::ptr::eq(body, block)) {
+                self.0.push(block);
+            }
         }
     }
-    let mut blocks = Blocks(Vec::new());
+    let mut blocks = Blocks(Vec::new(), None);
     walk(block, &mut blocks);
     let mut terminators = Vec::new();
     for block in blocks.0 {
@@ -202,7 +211,9 @@ fn statement_fix(source: &Source, index: usize) -> Option<Edit> {
     match next {
         TokenKind::LParen => None,
         TokenKind::Newline | TokenKind::Eof => Some(Edit::remove(start..end)),
-        TokenKind::Comment { .. } => Some(Edit::remove(start..semicolon.end)),
+        TokenKind::Comment { .. } | TokenKind::Semicolon => {
+            Some(Edit::remove(start..semicolon.end))
+        }
         _ if indented => Some(Edit::remove(semicolon.start..end)),
         _ => Some(Edit::replace(start..end, " ")),
     }
@@ -286,6 +297,38 @@ mod tests {
                 options
             ),
             "if x then f(); end;\ng();\nt = { a = 1, b = 2 };\n"
+        );
+    }
+
+    #[test]
+    fn flags_empty_statements_like_any_semicolon() {
+        expect_offenses(
+            READER,
+            ";; x = 1;;\nreturn;;\n",
+            &[
+                (1, 1, MESSAGE),
+                (1, 2, MESSAGE),
+                (1, 9, MESSAGE),
+                (1, 10, MESSAGE),
+                (2, 7, MESSAGE),
+                (2, 8, MESSAGE),
+            ],
+        );
+        expect_correction(READER, "x = 1;;\nreturn;;\n", "x = 1\nreturn\n");
+    }
+
+    #[test]
+    fn require_style_ends_extended_statements() {
+        let options = "EnforcedStyle: require";
+        assert_eq!(
+            autocorrect_with(
+                READER,
+                "const a = 1\nx += 1\nx ~= 1\nf(|b| ->\n  b + 1)\nlocal g = |c| ->\n  c\n\
+                 timer.Simple(1, || -> do\n  g(a)\nend)\nlocal v = x\n  ? 1\n  : 2;;\n",
+                options
+            ),
+            "const a = 1;\nx += 1;\nx ~= 1;\nf(|b| ->\n  b + 1);\nlocal g = |c| ->\n  c;\n\
+             timer.Simple(1, || -> do\n  g(a);\nend);\nlocal v = x\n  ? 1\n  : 2;\n"
         );
     }
 

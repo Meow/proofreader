@@ -44,7 +44,8 @@ const MAX_QUOTED_PIECE: usize = 40;
 /// number and boolean literals, calls of the `Escapers` (`sql.SQLStr`, `tonumber`) or of a
 /// function of the file that only returns such values (`local function esc(s) return
 /// sql.SQLStr(s) end`), calls of methods named in `EscapeMethods` (`db:escape`), arithmetic
-/// and `#` (whose result is a number), `a and b or c` over safe values, arguments of a literal
+/// the bit operators and `#` (whose result is a number), `a and b or c`, `c ? a : b` and `a ?? b`
+/// over safe values, arguments of a literal
 /// format string taken by a numeric conversion (`%d`, `%f`, ...), numeric `for` loop
 /// variables, and locals assigned once from a safe value. A query that is a local assigned
 /// once is followed to its value (`local q = '...' .. name`). A plain literal query, or one
@@ -362,7 +363,7 @@ impl<'t> Checker<'_, 't> {
                 .iter()
                 .any(|method| method == self.source.text_of(name)),
             ExpressionKind::Unary { operator, operand } => match operator.kind {
-                TokenKind::Hash => true,
+                TokenKind::Hash | TokenKind::Tilde => true,
                 TokenKind::Minus => self.is_safe(operand, depth),
                 _ => false,
             },
@@ -376,14 +377,25 @@ impl<'t> Checker<'_, 't> {
                 | TokenKind::Star
                 | TokenKind::Slash
                 | TokenKind::Percent
-                | TokenKind::Caret => true,
+                | TokenKind::Caret
+                | TokenKind::Ampersand
+                | TokenKind::Pipe
+                | TokenKind::Tilde
+                | TokenKind::Shl
+                | TokenKind::Shr
+                | TokenKind::Sar => true,
                 TokenKind::And | TokenKind::AndAnd => self.is_safe(right, depth),
-                TokenKind::Or | TokenKind::OrOr => {
+                TokenKind::Or | TokenKind::OrOr | TokenKind::Coalesce => {
                     self.is_safe(left, depth) && self.is_safe(right, depth)
                 }
                 TokenKind::Concat => self.is_safe(left, depth) && self.is_safe(right, depth),
                 _ => false,
             },
+            ExpressionKind::Ternary {
+                consequent,
+                alternative,
+                ..
+            } => self.is_safe(consequent, depth) && self.is_safe(alternative, depth),
             ExpressionKind::Name(_) => {
                 self.variable(piece)
                     .is_some_and(|id| self.numbers.contains(&id))
@@ -499,6 +511,22 @@ mod tests {
                     "Escape `self.n` with `sql.SQLStr` before putting it in a query.",
                 ),
             ],
+        );
+    }
+
+    #[test]
+    fn judges_the_extended_operators() {
+        expect_no_offenses(
+            READER,
+            "sql.Query('SELECT ' .. (flags & 1) .. (c ? 'a' : 'b') .. (tonumber(n) ?? 0) .. ~m)\n\
+             const function esc(s) return sql.SQLStr(s) end\nsql.Query('SELECT ' .. esc(name))\n",
+        );
+        expect_offense(
+            READER,
+            "sql.Query('SELECT ' .. (c ? name : 'b'))\n",
+            1,
+            24,
+            "Escape `(c ? name : 'b')` with `sql.SQLStr` before putting it in a query.",
         );
     }
 

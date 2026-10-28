@@ -54,9 +54,7 @@ end
 function PLUGIN:GetLeaders()
 	local leaders = table.ClearKeys(scores)
 
-	table.sort(leaders, function(a, b)
-		return a.points > b.points
-	end)
+	table.sort(leaders, function(a, b) return a.points > b.points end)
 
 	return leaders
 end

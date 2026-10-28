@@ -124,6 +124,27 @@ mod tests {
     const READER: &str = "Style/IncompleteDocumentation";
 
     #[test]
+    fn checks_short_functions_assigned_to_names() {
+        expect_offenses(
+            READER,
+            "--- Sums.\n-- @param a [Number]\nf.sum = |a, b| -> a + b\n",
+            &[
+                (3, 13, "Missing `@param` for `b`."),
+                (3, 16, "Missing `@return` for the value returned here."),
+            ],
+        );
+        expect_no_offenses(
+            READER,
+            "--- Logs.\n-- @param a [Any]\nf.reset = a -> nil\n\
+             --- Logs.\n-- @param a [Any]\nf.log = |a| -> do print(a) end\n",
+        );
+        expect_no_offenses(
+            READER,
+            "--- Doubles.\n-- @param x [Number]\nconst function double(x) return x * 2 end\n",
+        );
+    }
+
+    #[test]
     fn flags_undocumented_parameters() {
         expect_offenses(
             READER,

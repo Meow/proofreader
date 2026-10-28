@@ -248,7 +248,8 @@ impl<'t> Visitor<'t> for Finder<'_> {
                     self.privileged.push((expression.range.start, name));
                 }
             }
-            ExpressionKind::MethodCall { object, name, .. } => {
+            ExpressionKind::MethodCall { object, name, .. }
+            | ExpressionKind::SafeMethodCall { object, name, .. } => {
                 let name = self.source.text_of(name);
                 if self.is_check(name) {
                     self.checked = true;
@@ -306,6 +307,21 @@ mod tests {
                 (5, 1, &message(" `restart`", "RunConsoleCommand")),
                 (6, 1, &message("", "ply:Give")),
             ],
+        );
+    }
+
+    #[test]
+    fn checks_short_function_callbacks() {
+        expect_offense(
+            READER,
+            "concommand.Add('kick', |ply, cmd, args| -> target?.:Kick('bye'))\n",
+            1,
+            1,
+            &message(" `kick`", "target:Kick"),
+        );
+        expect_no_offenses(
+            READER,
+            "concommand.Add('kick', |ply| -> ply:IsAdmin() and target:Kick('bye'))\n",
         );
     }
 

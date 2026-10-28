@@ -171,6 +171,11 @@ mod tests {
     }
 
     #[test]
+    fn ignores_compound_and_safe_assignments() {
+        expect_no_offenses(READER, "x += x\na?.b = a?.b\nx = x ?? 1\n");
+    }
+
+    #[test]
     fn flags_targets_of_multiple_assignments() {
         expect_offense(READER, "a, b = a, c\n", 1, 1, "`a` is assigned to itself.");
         expect_offenses(

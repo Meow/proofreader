@@ -178,6 +178,19 @@ mod pascal_case_tests {
     }
 
     #[test]
+    fn constant_functions_are_local_functions() {
+        expect_offense(READER, "const function doThing() end\n", 1, 16, MESSAGE);
+        assert!(
+            inspect_with(
+                READER,
+                "const function doThing() end\n",
+                "LocalFunctionStyle: camelCase"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
     fn lumen_components_may_be_pascal_case() {
         expect_no_offenses_lumen(
             READER,

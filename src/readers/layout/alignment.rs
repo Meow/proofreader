@@ -95,7 +95,7 @@ fn assignment_on_line(source: &Source, line: u32) -> Option<AssignmentLine<'_>> 
     let first = source.first_code_token_on_line(line)?;
     if !matches!(
         first.kind,
-        TokenKind::Name | TokenKind::Local | TokenKind::LBracket
+        TokenKind::Name | TokenKind::Local | TokenKind::Const | TokenKind::LBracket
     ) {
         return None;
     }

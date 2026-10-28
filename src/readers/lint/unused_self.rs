@@ -65,6 +65,18 @@ mod tests {
     }
 
     #[test]
+    fn short_functions_read_self() {
+        expect_no_offenses(READER, "function a:b() return || -> self.x end\n");
+        expect_offense(
+            READER,
+            "function a:b() return |self| -> self end\n",
+            1,
+            12,
+            MESSAGE,
+        );
+    }
+
+    #[test]
     fn accepts_methods_using_self() {
         expect_no_offenses(
             READER,

@@ -16,7 +16,7 @@ function PLUGIN:PlayerInitialSpawn(actor)
   local message = 'Welcome, '..name..'!'
 
   if actor:IsAdmin() and name != '' then
-    message = message..' (admin)'
+    message ..= ' (admin)'
   end
 
   -- Remember the player for the scoreboard.
@@ -35,7 +35,7 @@ function PLUGIN:AddPoints(actor, amount)
     return 0
   end
 
-  entry.points = entry.points + amount
+  entry.points += amount
 
   return entry.points
 end
@@ -54,9 +54,7 @@ end
 function PLUGIN:GetLeaders()
   local leaders = table.ClearKeys(scores)
 
-  table.sort(leaders, function(a, b)
-    return a.points > b.points
-  end)
+  table.sort(leaders, |a, b| -> a.points > b.points)
 
   return leaders
 end

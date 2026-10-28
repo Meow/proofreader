@@ -4,6 +4,16 @@
 //! `||`, `continue`, `//` line comments and `/* */` block comments. Whitespace is emitted as
 //! trivia tokens, so concatenating the text of all tokens reproduces the input exactly.
 //!
+//! It also lexes the syntax extensions of LuaJIT 3.0: the bit operators (`&`, `|`, `~`, `<<`,
+//! `>>`, `~>>`), the ternary `?` and `:`, `?.`, `??`, `->`, the compound assignment operators
+//! (`+=`, `..=`, `~>>=`, ...) and `const`. Where the same text means different things, the
+//! kind follows from the neighboring tokens: `const` is [`TokenKind::Const`] where a `local`
+//! could stand and a name elsewhere, `|` around short function parameters is a
+//! [`TokenKind::Bar`] (`||` before `->` becomes two of them), a `:` closing the first branch of
+//! a ternary is a [`TokenKind::TernaryColon`], and a `~=` after the target of an assignment
+//! statement is xor assignment, a [`TokenKind::CompoundAssign`]. Numbers keep their `_`
+//! separators (`1_000`) and strings their `\u{XXXX}` escapes as written.
+//!
 //! [`lex_lumen`] lexes Lumen templates, Lua with markup in expression position, emitting the
 //! markup as [`TokenKind::Markup`] tokens and the Lua spliced into it as ordinary tokens (see
 //! [`crate::lumen`]). Malformed markup is recorded as a [`MarkupError`] and lexing goes on.
@@ -28,7 +38,7 @@ const MAX_MARKUP_DEPTH: usize = 200;
 pub fn lex(src: &str) -> Vec<Token> {
     let mut lexer = Lexer::new(src);
     lexer.run(false);
-    lexer.tokens
+    classify(src, lexer.tokens, &[])
 }
 
 /// Splits a Lumen template into tokens like [`lex`], with markup as [`TokenKind::Markup`]
@@ -40,7 +50,8 @@ pub fn lex(src: &str) -> Vec<Token> {
 pub fn lex_lumen(src: &str) -> (Vec<Token>, Markup) {
     let mut lexer = Lexer::new(src);
     lexer.run(true);
-    (lexer.tokens, lexer.markup)
+    let tokens = classify(src, lexer.tokens, &lexer.markup.splice_ends);
+    (tokens, lexer.markup)
 }
 
 /// Lexer state: the input, the current offset and the position bookkeeping.
@@ -189,17 +200,46 @@ impl<'a> Lexer<'a> {
             b'0'..=b'9' => self.number(),
             b'.' => match (self.at(1), self.at(2)) {
                 (Some(b'.'), Some(b'.')) => self.multi(3, TokenKind::Dots),
+                (Some(b'.'), Some(b'=')) => self.multi(3, TokenKind::CompoundAssign),
                 (Some(b'.'), _) => self.multi(2, TokenKind::Concat),
                 (Some(next), _) if next.is_ascii_digit() => self.number(),
                 _ => self.single(TokenKind::Dot),
             },
             b'=' => self.with_eq(TokenKind::Eq, TokenKind::Assign),
-            b'~' => self.with_eq(TokenKind::Ne, TokenKind::Tilde),
+            b'~' => match (self.at(1), self.at(2), self.at(3)) {
+                (Some(b'='), _, _) => self.multi(2, TokenKind::Ne),
+                (Some(b'>'), Some(b'>'), Some(b'=')) => self.multi(4, TokenKind::CompoundAssign),
+                (Some(b'>'), Some(b'>'), _) => self.multi(3, TokenKind::Sar),
+                _ => self.single(TokenKind::Tilde),
+            },
             b'!' => self.with_eq(TokenKind::Ne, TokenKind::Bang),
+            b'<' | b'>' if self.at(1) == Some(byte) => {
+                let shift = if byte == b'<' {
+                    TokenKind::Shl
+                } else {
+                    TokenKind::Shr
+                };
+                if self.at(2) == Some(b'=') {
+                    self.multi(3, TokenKind::CompoundAssign)
+                } else {
+                    self.multi(2, shift)
+                }
+            }
             b'<' => self.with_eq(TokenKind::Le, TokenKind::Lt),
             b'>' => self.with_eq(TokenKind::Ge, TokenKind::Gt),
             b'&' if self.at(1) == Some(b'&') => self.multi(2, TokenKind::AndAnd),
             b'|' if self.at(1) == Some(b'|') => self.multi(2, TokenKind::OrOr),
+            b'&' => self.with_eq(TokenKind::CompoundAssign, TokenKind::Ampersand),
+            b'|' => self.with_eq(TokenKind::CompoundAssign, TokenKind::Pipe),
+            b'?' => match self.at(1) {
+                Some(b'.') => self.multi(2, TokenKind::SafeNav),
+                Some(b'?') => self.multi(2, TokenKind::Coalesce),
+                _ => self.single(TokenKind::Question),
+            },
+            b'-' if self.at(1) == Some(b'>') => self.multi(2, TokenKind::Arrow),
+            b'+' | b'-' | b'*' | b'/' | b'%' if self.at(1) == Some(b'=') => {
+                self.multi(2, TokenKind::CompoundAssign)
+            }
             b'+' => self.single(TokenKind::Plus),
             b'-' => self.single(TokenKind::Minus),
             b'*' => self.single(TokenKind::Star),
@@ -385,6 +425,383 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         TokenKind::Comment { long: true }
+    }
+}
+
+/// Gives the tokens whose kind depends on their neighbors that kind (see the module
+/// documentation). `splice_ends` are the offsets of the `}` closing the splices of a Lumen
+/// template, which the Lua inside a splice cannot reach past.
+fn classify(src: &str, tokens: Vec<Token>, splice_ends: &[usize]) -> Vec<Token> {
+    let mut tokens = split_empty_parameters(src, tokens);
+    let code: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| {
+            !token.is_trivia() && !token.kind.is_comment() && token.kind != TokenKind::Eof
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let context = Neighbors {
+        src,
+        code: &code,
+        splice_ends,
+    };
+    for position in 0..code.len() {
+        let kind = match tokens[code[position]].kind {
+            TokenKind::Pipe => context.parameter_bars(&tokens, position),
+            TokenKind::Name => context.const_keyword(&tokens, position),
+            TokenKind::Ne => context.xor_assignment(&tokens, position),
+            _ => None,
+        };
+        for (at, kind) in kind.into_iter().flatten() {
+            tokens[code[at]].kind = kind;
+        }
+    }
+    context.ternary_colons(&mut tokens);
+    tokens
+}
+
+/// Splits every `||` that stands where an operand starts and is followed by `->` into the two
+/// [`TokenKind::Bar`]s of an empty parameter list.
+fn split_empty_parameters(src: &str, tokens: Vec<Token>) -> Vec<Token> {
+    let mut result: Vec<Token> = Vec::with_capacity(tokens.len());
+    for (index, token) in tokens.iter().enumerate() {
+        let next = tokens[index + 1..]
+            .iter()
+            .find(|next| !next.is_trivia() && !next.kind.is_comment());
+        let previous = result
+            .iter()
+            .rev()
+            .find(|previous| !previous.is_trivia() && !previous.kind.is_comment());
+        if token.kind == TokenKind::OrOr
+            && next.is_some_and(|next| next.kind == TokenKind::Arrow)
+            && !previous.is_some_and(|previous| ends_value(src, previous))
+        {
+            for offset in 0..2 {
+                result.push(Token {
+                    kind: TokenKind::Bar,
+                    start: token.start + offset,
+                    end: token.start + offset + 1,
+                    col: token.col + offset as u32,
+                    ..*token
+                });
+            }
+            continue;
+        }
+        result.push(*token);
+    }
+    result
+}
+
+/// Whether `token` can end an operand, so that what follows it is an operator or the start of
+/// another statement: a name, a literal, `...`, a closing bracket, `end` (of a function), or
+/// markup other than the start of a splice.
+fn ends_value(src: &str, token: &Token) -> bool {
+    match token.kind {
+        TokenKind::Markup => !crate::lumen::opens_splice(token.text(src)),
+        kind => kind.ends_operand() || kind == TokenKind::End,
+    }
+}
+
+/// The code tokens of a source, for looking at the neighbors of a token.
+struct Neighbors<'a> {
+    src: &'a str,
+    /// Indexes of the code tokens other than comments and `Eof`.
+    code: &'a [usize],
+    splice_ends: &'a [usize],
+}
+
+impl Neighbors<'_> {
+    /// The kind of the code token at `position`, if there is one.
+    fn kind(&self, tokens: &[Token], position: usize) -> Option<TokenKind> {
+        self.code.get(position).map(|&index| tokens[index].kind)
+    }
+
+    /// Whether a statement may start at the code token at `position`: the file starts there,
+    /// or the token before it ends an operand or a statement header (`do`, `then`, `else`,
+    /// `repeat`, `;`, `break`, `continue`, the `::` closing a label).
+    fn starts_statement(&self, tokens: &[Token], position: usize) -> bool {
+        let Some(previous) = position.checked_sub(1) else {
+            return true;
+        };
+        let token = &tokens[self.code[previous]];
+        match token.kind {
+            TokenKind::Do
+            | TokenKind::Then
+            | TokenKind::Else
+            | TokenKind::Repeat
+            | TokenKind::Semicolon
+            | TokenKind::Break
+            | TokenKind::Continue => true,
+            TokenKind::Colon => {
+                previous
+                    .checked_sub(1)
+                    .and_then(|before| self.kind(tokens, before))
+                    == Some(TokenKind::Colon)
+            }
+            _ => ends_value(self.src, token),
+        }
+    }
+
+    /// For a `|` where an operand starts that opens a parameter list closed by a `|` followed by
+    /// `->` (`|a, b| ->`, `| | ->`, `|...| ->`), both bars.
+    fn parameter_bars(&self, tokens: &[Token], position: usize) -> Option<Vec<(usize, TokenKind)>> {
+        if let Some(previous) = position.checked_sub(1)
+            && ends_value(self.src, &tokens[self.code[previous]])
+        {
+            return None;
+        }
+        let mut at = position + 1;
+        if self.kind(tokens, at) != Some(TokenKind::Pipe) {
+            loop {
+                match self.kind(tokens, at)? {
+                    TokenKind::Name => {
+                        at += 1;
+                        if self.kind(tokens, at) == Some(TokenKind::Comma) {
+                            at += 1;
+                            continue;
+                        }
+                    }
+                    TokenKind::Dots => at += 1,
+                    _ => return None,
+                }
+                break;
+            }
+        }
+        (self.kind(tokens, at) == Some(TokenKind::Pipe)
+            && self.kind(tokens, at + 1) == Some(TokenKind::Arrow))
+        .then(|| vec![(position, TokenKind::Bar), (at, TokenKind::Bar)])
+    }
+
+    /// For a `const` name followed by a name or `function` where a statement may start, the
+    /// `const` keyword.
+    fn const_keyword(&self, tokens: &[Token], position: usize) -> Option<Vec<(usize, TokenKind)>> {
+        let token = &tokens[self.code[position]];
+        (token.text(self.src) == "const"
+            && matches!(
+                self.kind(tokens, position + 1),
+                Some(TokenKind::Name | TokenKind::Function)
+            )
+            && self.starts_statement(tokens, position))
+        .then(|| vec![(position, TokenKind::Const)])
+    }
+
+    /// For a `~=` following a name, field or index that starts a statement, xor assignment.
+    fn xor_assignment(&self, tokens: &[Token], position: usize) -> Option<Vec<(usize, TokenKind)>> {
+        if tokens[self.code[position]].text(self.src) != "~=" {
+            return None;
+        }
+        let start = self.target_start(tokens, position.checked_sub(1)?)?;
+        self.starts_statement(tokens, start)
+            .then(|| vec![(position, TokenKind::CompoundAssign)])
+    }
+
+    /// The position of the first token of the name, field or index ending with the code token
+    /// at `last` (`a`, `a.b`, `a[k]`, `f(x).y`, `f'x'.y`, `a?.b`); `None` when it is no such
+    /// expression.
+    fn target_start(&self, tokens: &[Token], last: usize) -> Option<usize> {
+        let mut at = last;
+        loop {
+            let previous = |at: usize| {
+                at.checked_sub(1)
+                    .and_then(|before| self.kind(tokens, before))
+            };
+            match self.kind(tokens, at)? {
+                TokenKind::Name => match previous(at) {
+                    Some(TokenKind::Colon)
+                        if at.checked_sub(1).and_then(previous) == Some(TokenKind::Colon) =>
+                    {
+                        return Some(at);
+                    }
+                    Some(TokenKind::Dot | TokenKind::Colon | TokenKind::SafeNav) => {
+                        at = at.checked_sub(2)?;
+                    }
+                    _ => return Some(at),
+                },
+                TokenKind::RBracket => {
+                    let open = self.matching_open(tokens, at)?;
+                    at = open.checked_sub(1)?;
+                    if self.kind(tokens, at) == Some(TokenKind::SafeNav) {
+                        at = at.checked_sub(1)?;
+                    }
+                }
+                kind @ (TokenKind::RParen | TokenKind::RBrace | TokenKind::String { .. }) => {
+                    let open = if kind.is_string() {
+                        at
+                    } else {
+                        self.matching_open(tokens, at)?
+                    };
+                    match previous(open) {
+                        Some(
+                            TokenKind::Name
+                            | TokenKind::RParen
+                            | TokenKind::RBracket
+                            | TokenKind::RBrace
+                            | TokenKind::String { .. }
+                            | TokenKind::SafeNav,
+                        ) => {
+                            at = open - 1;
+                            if self.kind(tokens, at) == Some(TokenKind::SafeNav) {
+                                at = at.checked_sub(1)?;
+                            }
+                        }
+                        _ if kind == TokenKind::RParen => return Some(open),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// The position of the bracket opening the one closed at `close`.
+    fn matching_open(&self, tokens: &[Token], close: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for at in (0..=close).rev() {
+            match self.kind(tokens, at)? {
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth += 1,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(at);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Marks the `:` that closes the first branch of a ternary, reading colons the way LuaJIT
+    /// does: inside the first branch of a ternary (and the expressions nested in it without
+    /// brackets, such as the body of a short function) a `:` never starts a method call, so the
+    /// first one closes the branch; in the second branch a `:` after a name, a `)`, a `]` or the
+    /// arguments of a call starts a method call, and any other `:` ends that branch and belongs
+    /// to a ternary around it. Every bracket, splice and block has its own ternaries, and
+    /// keywords that cannot stand inside an expression drop the open ones.
+    fn ternary_colons(&self, tokens: &mut [Token]) {
+        let mut frames: Vec<Frame> = vec![Frame::default()];
+        let mut primary = false;
+        for (position, &index) in self.code.iter().enumerate() {
+            let token = tokens[index];
+            let ends_primary = match token.kind {
+                TokenKind::Name | TokenKind::RParen | TokenKind::RBracket => true,
+                TokenKind::String { .. } => primary,
+                _ => false,
+            };
+            if token.kind == TokenKind::Markup {
+                if self.splice_ends.contains(&token.start) && frames.len() > 1 {
+                    frames.pop();
+                }
+                if crate::lumen::opens_splice(token.text(self.src)) {
+                    frames.push(Frame::default());
+                }
+                primary = false;
+                continue;
+            }
+            let mut closed_call = false;
+            match token.kind {
+                TokenKind::LBrace => frames.push(Frame {
+                    call: primary,
+                    ..Frame::default()
+                }),
+                TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::Function
+                | TokenKind::Do
+                | TokenKind::Then
+                | TokenKind::Repeat => frames.push(Frame::default()),
+                TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+                | TokenKind::End
+                | TokenKind::Until
+                | TokenKind::ElseIf => {
+                    if frames.len() > 1
+                        && let Some(frame) = frames.pop()
+                    {
+                        closed_call = token.kind == TokenKind::RBrace && frame.call;
+                    }
+                }
+                TokenKind::Else => {
+                    if frames.len() > 1 {
+                        frames.pop();
+                    }
+                    frames.push(Frame::default());
+                }
+                TokenKind::Local
+                | TokenKind::Const
+                | TokenKind::Return
+                | TokenKind::If
+                | TokenKind::While
+                | TokenKind::For
+                | TokenKind::Goto
+                | TokenKind::Break
+                | TokenKind::Continue
+                | TokenKind::Semicolon => {
+                    if let Some(frame) = frames.last_mut() {
+                        frame.branches.clear();
+                    }
+                }
+                TokenKind::Question => {
+                    if let Some(frame) = frames.last_mut() {
+                        frame.branches.push(Branch::First);
+                    }
+                }
+                TokenKind::Colon => {
+                    let label = [position.checked_sub(1), Some(position + 1)]
+                        .into_iter()
+                        .flatten()
+                        .any(|at| self.kind(tokens, at) == Some(TokenKind::Colon));
+                    if !label
+                        && let Some(frame) = frames.last_mut()
+                        && frame.closes_branch(primary)
+                    {
+                        tokens[index].kind = TokenKind::TernaryColon;
+                    }
+                }
+                _ => {}
+            }
+            primary = ends_primary || closed_call;
+        }
+    }
+}
+
+/// The open ternaries of a bracket, splice or block, for [`Neighbors::ternary_colons`].
+#[derive(Debug, Default)]
+struct Frame {
+    /// The branch every open ternary is in, outermost first.
+    branches: Vec<Branch>,
+    /// For a `{`, whether it holds the arguments of a call (`f { ... }`).
+    call: bool,
+}
+
+/// The branch of a ternary the tokens are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Branch {
+    /// Between the `?` and the `:`.
+    First,
+    /// After the `:`.
+    Second,
+}
+
+impl Frame {
+    /// Whether a `:` that follows a token ending a primary expression (`primary`) or another
+    /// token closes the first branch of an open ternary, which it then leaves for the second.
+    fn closes_branch(&mut self, primary: bool) -> bool {
+        loop {
+            match self.branches.last_mut() {
+                None => return false,
+                Some(branch @ Branch::First) => {
+                    *branch = Branch::Second;
+                    return true;
+                }
+                Some(Branch::Second) if primary => return false,
+                Some(Branch::Second) => {
+                    self.branches.pop();
+                }
+            }
+        }
     }
 }
 
@@ -948,9 +1365,290 @@ mod tests {
     }
 
     #[test]
-    fn lone_ampersand_and_pipe_are_unknown() {
-        assert_eq!(kinds("&|"), vec![Unknown, Unknown]);
+    fn unknown_bytes() {
         assert_eq!(kinds("@$`\\"), vec![Unknown, Unknown, Unknown, Unknown]);
+    }
+
+    #[test]
+    fn extended_operators() {
+        let src = "x = a & b | c ~ d << e >> f ~>> g ?? h ?. i\n";
+        let found: Vec<TokenKind> = code(src).into_iter().map(|(kind, _)| kind).collect();
+        assert_eq!(
+            found,
+            vec![
+                Name, Assign, Name, Ampersand, Name, Pipe, Name, Tilde, Name, Shl, Name, Shr, Name,
+                Sar, Name, Coalesce, Name, SafeNav, Name
+            ]
+        );
+        assert_eq!(
+            code("y = ~x"),
+            vec![(Name, "y"), (Assign, "="), (Tilde, "~"), (Name, "x")]
+        );
+        assert_eq!(
+            code("a~>b"),
+            vec![(Name, "a"), (Tilde, "~"), (Gt, ">"), (Name, "b")]
+        );
+        assert_eq!(
+            code("a<=b>=c<<d"),
+            vec![
+                (Name, "a"),
+                (Le, "<="),
+                (Name, "b"),
+                (Ge, ">="),
+                (Name, "c"),
+                (Shl, "<<"),
+                (Name, "d")
+            ]
+        );
+    }
+
+    #[test]
+    fn compound_assignment_operators() {
+        for operator in [
+            "+=", "-=", "*=", "/=", "%=", "..=", "&=", "|=", "<<=", ">>=", "~>>=", "~=",
+        ] {
+            let src = format!("x {operator} 1");
+            assert_eq!(
+                code(&src),
+                vec![(Name, "x"), (CompoundAssign, operator), (Number, "1")],
+                "{operator}"
+            );
+        }
+        assert_eq!(
+            code("x = a ... b ^= c"),
+            vec![
+                (Name, "x"),
+                (Assign, "="),
+                (Name, "a"),
+                (Dots, "..."),
+                (Name, "b"),
+                (Caret, "^"),
+                (Assign, "="),
+                (Name, "c")
+            ]
+        );
+        assert_eq!(
+            code("x -- -= 1\n"),
+            vec![(Name, "x"), (Comment { long: false }, "-- -= 1")]
+        );
+    }
+
+    #[test]
+    fn tilde_equals_is_xor_assignment_only_after_a_statement_target() {
+        let kinds_of = |src: &'static str| -> Vec<TokenKind> {
+            code(src)
+                .into_iter()
+                .filter(|(_, text)| *text == "~=")
+                .map(|(kind, _)| kind)
+                .collect()
+        };
+        assert_eq!(kinds_of("x ~= 1"), vec![CompoundAssign]);
+        assert_eq!(kinds_of("do a.b[c] ~= 1 end"), vec![CompoundAssign]);
+        assert_eq!(kinds_of("f() x.y ~= 2"), vec![CompoundAssign]);
+        assert_eq!(kinds_of("t[1]:m().x ~= 2"), vec![CompoundAssign]);
+        assert_eq!(kinds_of("::skip:: flags ~= 8"), vec![CompoundAssign]);
+        assert_eq!(
+            kinds_of("f'x'.y ~= 1 f{}.y ~= 1 o 's'?.x ~= b"),
+            vec![CompoundAssign; 3]
+        );
+        assert_eq!(kinds_of("if x ~= 1 then end"), vec![Ne]);
+        assert_eq!(kinds_of("y = x ~= 1"), vec![Ne]);
+        assert_eq!(kinds_of("return a.b ~= c"), vec![Ne]);
+        assert_eq!(kinds_of("f(a, b ~= c)"), vec![Ne]);
+        assert_eq!(kinds_of("x = c ? a ~= b : d ~= e"), vec![Ne, Ne]);
+        assert_eq!(kinds_of("y = x != 1"), Vec::<TokenKind>::new());
+    }
+
+    #[test]
+    fn ternaries() {
+        assert_eq!(
+            code("x = c ? a : b"),
+            vec![
+                (Name, "x"),
+                (Assign, "="),
+                (Name, "c"),
+                (Question, "?"),
+                (Name, "a"),
+                (TernaryColon, ":"),
+                (Name, "b")
+            ]
+        );
+        let colons = |src: &'static str| -> Vec<TokenKind> {
+            code(src)
+                .into_iter()
+                .filter(|(_, text)| *text == ":")
+                .map(|(kind, _)| kind)
+                .collect()
+        };
+        assert_eq!(colons("x = c ? o:m() : b"), vec![TernaryColon, Colon]);
+        assert_eq!(
+            colons("x = c ? (o:m()) : o:n()"),
+            vec![Colon, TernaryColon, Colon]
+        );
+        assert_eq!(
+            colons("x = c ? d ? 1 : 2 : 3"),
+            vec![TernaryColon, TernaryColon]
+        );
+        assert_eq!(
+            colons("x = c ? 1 : d ? 2 : 3"),
+            vec![TernaryColon, TernaryColon]
+        );
+        assert_eq!(
+            colons("x = c ? function(o) return o:m() end : f(o:m())"),
+            vec![Colon, TernaryColon, Colon]
+        );
+        assert_eq!(
+            colons("x = c ? |o| -> do return o:m() end : 2"),
+            vec![Colon, TernaryColon]
+        );
+        assert_eq!(
+            colons("x = { a = c ? 1 : 2, o:m() }"),
+            vec![TernaryColon, Colon]
+        );
+        assert_eq!(
+            colons("::top:: o:m() goto top"),
+            vec![Colon, Colon, Colon, Colon, Colon]
+        );
+        assert_eq!(colons("x = c ? 1\nlocal y = o:m()"), vec![Colon]);
+        assert_eq!(
+            colons("x = a ? b ? 1 : 2 : 3"),
+            vec![TernaryColon, TernaryColon]
+        );
+        assert_eq!(
+            colons("x = a ? (b ? 1 : o:m()) : 3"),
+            vec![TernaryColon, Colon, TernaryColon]
+        );
+        assert_eq!(
+            colons("x = a ? 1 : o:m() .. 'x'"),
+            vec![TernaryColon, Colon]
+        );
+        assert_eq!(
+            colons("x = a ? b ? 1 : f'x':m() : 3"),
+            vec![TernaryColon, Colon, Colon]
+        );
+        assert_eq!(
+            colons("x = a ? b ? 1 : {} : 3"),
+            vec![TernaryColon, TernaryColon]
+        );
+        assert_eq!(colons("x = a ? b ? 1 : f{}:m()"), vec![TernaryColon, Colon]);
+        assert_eq!(
+            colons("x = a ? || -> c ? 1 : o:m() : 3"),
+            vec![TernaryColon, Colon, Colon]
+        );
+    }
+
+    #[test]
+    fn safe_navigation_and_coalescing() {
+        assert_eq!(
+            code("a?.b?.[1]?.(2)?.:c()??d"),
+            vec![
+                (Name, "a"),
+                (SafeNav, "?."),
+                (Name, "b"),
+                (SafeNav, "?."),
+                (LBracket, "["),
+                (Number, "1"),
+                (RBracket, "]"),
+                (SafeNav, "?."),
+                (LParen, "("),
+                (Number, "2"),
+                (RParen, ")"),
+                (SafeNav, "?."),
+                (Colon, ":"),
+                (Name, "c"),
+                (LParen, "("),
+                (RParen, ")"),
+                (Coalesce, "??"),
+                (Name, "d")
+            ]
+        );
+    }
+
+    #[test]
+    fn short_functions() {
+        assert_eq!(
+            code("f(|a, b| -> a | b)"),
+            vec![
+                (Name, "f"),
+                (LParen, "("),
+                (Bar, "|"),
+                (Name, "a"),
+                (Comma, ","),
+                (Name, "b"),
+                (Bar, "|"),
+                (Arrow, "->"),
+                (Name, "a"),
+                (Pipe, "|"),
+                (Name, "b"),
+                (RParen, ")")
+            ]
+        );
+        assert_eq!(
+            code("f(|| -> 1, x -> x)"),
+            vec![
+                (Name, "f"),
+                (LParen, "("),
+                (Bar, "|"),
+                (Bar, "|"),
+                (Arrow, "->"),
+                (Number, "1"),
+                (Comma, ","),
+                (Name, "x"),
+                (Arrow, "->"),
+                (Name, "x"),
+                (RParen, ")")
+            ]
+        );
+        let bars = |src: &'static str| -> Vec<TokenKind> {
+            code(src)
+                .into_iter()
+                .filter(|(_, text)| text.starts_with('|'))
+                .map(|(kind, _)| kind)
+                .collect()
+        };
+        assert_eq!(bars("f(| | -> 1)"), vec![Bar, Bar]);
+        assert_eq!(bars("f(|...| -> ...)"), vec![Bar, Bar]);
+        assert_eq!(bars("f(|a, ...| -> a)"), vec![Bar, Bar]);
+        assert_eq!(bars("x = a || b"), vec![OrOr]);
+        assert_eq!(bars("x = a | b | c"), vec![Pipe, Pipe]);
+        assert_eq!(bars("x = |a| + b"), vec![Pipe, Pipe]);
+        let tokens = check_invariants("f(||->1)");
+        assert_eq!(tokens[2].kind, Bar);
+        assert_eq!((tokens[3].start, tokens[3].col), (3, 4));
+    }
+
+    #[test]
+    fn const_is_a_keyword_where_local_could_stand() {
+        let consts = |src: &'static str| -> Vec<TokenKind> {
+            code(src)
+                .into_iter()
+                .filter(|(_, text)| *text == "const")
+                .map(|(kind, _)| kind)
+                .collect()
+        };
+        assert_eq!(consts("const x = 1"), vec![Const]);
+        assert_eq!(consts("const function f() end"), vec![Const]);
+        assert_eq!(consts("do const a, b = 1, 2 end"), vec![Const]);
+        assert_eq!(consts("x = y const z = 1"), vec![Const]);
+        assert_eq!(consts("const = 1 print(const)"), vec![Name, Name]);
+        assert_eq!(consts("local const = 1"), vec![Name]);
+        assert_eq!(consts("x = const\nfunction f() end"), vec![Name]);
+        assert_eq!(consts("x = t.const"), vec![Name]);
+    }
+
+    #[test]
+    fn number_separators() {
+        for number in ["1_000", "0x_FF", "1_0.5", "1e1_0"] {
+            assert_eq!(code(number), vec![(Number, number)], "{number}");
+        }
+    }
+
+    #[test]
+    fn unicode_escapes_stay_in_strings() {
+        assert_eq!(
+            code("'\\u{48}\\u{20AC}'"),
+            vec![(String { long: false }, "'\\u{48}\\u{20AC}'")]
+        );
     }
 
     #[test]
@@ -1634,6 +2332,34 @@ end
             .expect("markup");
         assert_eq!(markup_token.text(value), "<a title=\"x\n  y\" />");
         assert_eq!((markup_token.line, markup_token.end_line), (1, 2));
+    }
+
+    #[test]
+    fn lumen_splices_hold_the_extended_syntax() {
+        let found: Vec<(TokenKind, &str)> =
+            lumen("return <view a={c ? 1 : 2}>{a}{|x| -> x}{y -> <b/>}</view>\n")
+                .into_iter()
+                .filter(|(kind, _)| *kind != Markup)
+                .collect();
+        assert_eq!(
+            found,
+            vec![
+                (Return, "return"),
+                (Name, "c"),
+                (Question, "?"),
+                (Number, "1"),
+                (TernaryColon, ":"),
+                (Number, "2"),
+                (Name, "a"),
+                (Bar, "|"),
+                (Name, "x"),
+                (Bar, "|"),
+                (Arrow, "->"),
+                (Name, "x"),
+                (Name, "y"),
+                (Arrow, "->"),
+            ]
+        );
     }
 
     #[test]

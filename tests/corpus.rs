@@ -400,6 +400,85 @@ fn line_length_corrections_only_break_lines() {
     );
 }
 
+/// The readers whose fixes write the syntax extensions of LuaJIT 3.0.
+const EXTENDING_READERS: [&str; 5] = [
+    "Style/BitOperators",
+    "Style/CompoundAssignment",
+    "Style/NumericSeparators",
+    "Style/ShortFunction",
+    "Style/TernaryOperator",
+];
+
+/// A configuration of the corpus with `readers` enabled.
+fn enabling(root: &Path, readers: &[&str]) -> Config {
+    let yaml: String = readers
+        .iter()
+        .map(|reader| format!("{reader}:\n  Enabled: true\n"))
+        .collect();
+    Config::from_yaml_str(&yaml, root).expect("configuration")
+}
+
+/// Options autocorrecting with `readers` alone.
+fn fixing(readers: &[&str]) -> Options {
+    let readers: Vec<String> = readers.iter().map(|reader| (*reader).to_owned()).collect();
+    Options {
+        fix: true,
+        filter: ReaderFilter::new(&readers, &[]).expect("known readers"),
+        ..Options::default()
+    }
+}
+
+#[test]
+#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+fn extended_syntax_rewrites_and_lowering_round_trip() {
+    let root = Path::new(CORPUS);
+    let extending = enabling(root, &EXTENDING_READERS);
+    let lowering = enabling(root, &["Lint/ExtendedSyntax"]);
+    let syntax = Options {
+        filter: ReaderFilter::single("Lint/Syntax"),
+        ..Options::default()
+    };
+    let mut changed = 0;
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "lua"))
+    {
+        let path = entry.path();
+        let display = path.display();
+        let text = std::fs::read_to_string(path).expect("UTF-8 source");
+        let (_, extended) = inspect_source(
+            &Source::new(path, text.as_str()),
+            &extending,
+            &fixing(&EXTENDING_READERS),
+        );
+        let Some(extended) = extended else {
+            continue;
+        };
+        changed += 1;
+        let source = Source::new(path, extended.as_str());
+        let (offenses, again) = inspect_source(&source, &extending, &fixing(&EXTENDING_READERS));
+        assert!(
+            again.is_none() && offenses.iter().all(|offense| !offense.correctable()),
+            "{display} is not idempotent"
+        );
+        let (problems, _) = inspect_source(&source, &extending, &syntax);
+        assert!(
+            problems.is_empty(),
+            "{display} does not parse: {problems:?}"
+        );
+        let (_, lowered) = inspect_source(&source, &lowering, &fixing(&["Lint/ExtendedSyntax"]));
+        let lowered = lowered.expect("the extensions are lowered");
+        let (before, after) = (normalized(&text), normalized(&lowered));
+        assert!(
+            only_removals(&before, &after).is_ok() || only_removals(&after, &before).is_ok(),
+            "{display}: lowering does not give back the code:\n{lowered}"
+        );
+    }
+    assert!(changed > 0);
+}
+
 #[test]
 fn removals_are_checked() {
     let before = normalized("if (not x) then a = { 1, }; end\n");

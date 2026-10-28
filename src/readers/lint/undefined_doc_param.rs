@@ -172,6 +172,21 @@ mod tests {
     }
 
     #[test]
+    fn checks_short_functions() {
+        expect_offense(
+            READER,
+            "--- Sums.\n-- @param a [Number]\n-- @param c [Number]\nlocal sum = |a, b| -> a + b\n",
+            3,
+            11,
+            "`@param c` does not match a parameter of `sum`.",
+        );
+        expect_no_offenses(
+            READER,
+            "--- Counts.\n-- @param ... [Any]\nlocal count = |...| -> select('#', ...)\n",
+        );
+    }
+
+    #[test]
     fn never_autocorrects() {
         let src = "-- @param a\nfunction f() end\n";
         assert_eq!(autocorrect(READER, src), src);

@@ -8,7 +8,10 @@
 //! Scoping follows Lua: a `local` statement's names are visible after the whole statement (the
 //! right-hand side of `local x = x` sees the outer `x`), a `local function` is visible inside its
 //! own body, parameters and loop variables are visible in the body, every `if` branch is its own
-//! block, and the `until` condition of a `repeat` loop sees the locals of the loop body.
+//! block, and the `until` condition of a `repeat` loop sees the locals of the loop body. A
+//! `const` declaration declares locals like `local`, the parameters of a short function
+//! (`|a, b| -> a + b`) are parameters, and a compound assignment (`x += 1`) reads and writes its
+//! target.
 //!
 //! The component tags of a Lumen template (see [`Source::component_references`]) are reads of
 //! the variable they name, resolved at the offset of the tag. The Lua spliced into markup is
@@ -205,6 +208,18 @@ fn is_structural(kind: TokenKind) -> bool {
                 | TokenKind::Tilde
                 | TokenKind::AndAnd
                 | TokenKind::OrOr
+                | TokenKind::Ampersand
+                | TokenKind::Pipe
+                | TokenKind::Bar
+                | TokenKind::Shl
+                | TokenKind::Shr
+                | TokenKind::Sar
+                | TokenKind::Question
+                | TokenKind::TernaryColon
+                | TokenKind::SafeNav
+                | TokenKind::Coalesce
+                | TokenKind::Arrow
+                | TokenKind::CompoundAssign
                 | TokenKind::Space
                 | TokenKind::Tab
                 | TokenKind::Newline
@@ -234,6 +249,13 @@ fn is_binary_operator(kind: TokenKind) -> bool {
             | TokenKind::Or
             | TokenKind::AndAnd
             | TokenKind::OrOr
+            | TokenKind::Ampersand
+            | TokenKind::Pipe
+            | TokenKind::Tilde
+            | TokenKind::Shl
+            | TokenKind::Shr
+            | TokenKind::Sar
+            | TokenKind::Coalesce
     )
 }
 
@@ -509,7 +531,7 @@ impl<'a> Resolver<'a> {
             TokenKind::If => self.if_statement()?,
             TokenKind::For => self.for_statement()?,
             TokenKind::Function => self.function_statement()?,
-            TokenKind::Local => self.local_statement()?,
+            TokenKind::Local | TokenKind::Const => self.local_statement()?,
             _ => self.expression_statement()?,
         }
         Ok(())
@@ -583,7 +605,7 @@ impl<'a> Resolver<'a> {
         self.function_body(keyword, method)
     }
 
-    /// Parses `local function f() ... end` or `local a, b = ...`.
+    /// Parses `local function f() ... end` or `local a, b = ...`, or the same with `const`.
     fn local_statement(&mut self) -> Parse {
         let local = self.bump()?;
         if self.check(TokenKind::Function) {
@@ -605,9 +627,18 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Parses a call statement or an assignment; a bare name on its own is unparsable.
+    /// Parses a call statement or an assignment; a bare name on its own is unparsable. A
+    /// compound assignment reads and writes its target.
     fn expression_statement(&mut self) -> Parse {
         let first = self.suffixed_expression()?;
+        if self.eat(TokenKind::CompoundAssign)? {
+            self.expression()?;
+            if let Some(name) = first {
+                self.write(name);
+                self.read(name);
+            }
+            return Ok(());
+        }
         if !matches!(self.peek(), Some(TokenKind::Assign | TokenKind::Comma)) {
             return match first {
                 Some(_) => Err(Unparsable),
@@ -674,7 +705,8 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Parses an expression: operands joined by binary operators, each with any unary prefixes.
+    /// Parses an expression: operands joined by binary operators, each with any unary prefixes,
+    /// optionally followed by the `? a : b` of a ternary.
     fn expression(&mut self) -> Parse {
         self.descend()?;
         loop {
@@ -686,6 +718,11 @@ impl<'a> Resolver<'a> {
                 break;
             }
             self.bump()?;
+        }
+        if self.eat(TokenKind::Question)? {
+            self.expression()?;
+            self.expect(TokenKind::TernaryColon)?;
+            self.expression()?;
         }
         self.ascend();
         Ok(())
@@ -711,12 +748,50 @@ impl<'a> Resolver<'a> {
             }
             Some(TokenKind::LBrace) => self.table()?,
             Some(TokenKind::Markup) => self.markup()?,
+            Some(TokenKind::Bar) => self.short_function()?,
+            Some(TokenKind::Name) if self.peek_at(1) == Some(TokenKind::Arrow) => {
+                self.short_function()?;
+            }
             _ => {
                 if let Some(name) = self.suffixed_expression()? {
                     self.read(name);
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Parses a short function (`|a, b| -> ...`, `|| -> ...`, `a -> ...`): its parameters, declared
+    /// for its body, and an expression or `do ... end` body.
+    fn short_function(&mut self) -> Parse {
+        self.descend()?;
+        self.open_scope();
+        let first = self.bump()?;
+        if first.kind == TokenKind::Name {
+            self.declare(first, DeclarationKind::Parameter, first.start, Some(first));
+        } else {
+            while !self.check(TokenKind::Bar) {
+                if self.eat(TokenKind::Dots)? {
+                    break;
+                }
+                let name = self.expect(TokenKind::Name)?;
+                self.declare(name, DeclarationKind::Parameter, first.start, Some(first));
+                if !self.eat(TokenKind::Comma)? {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Bar)?;
+        }
+        self.expect(TokenKind::Arrow)?;
+        if self.eat(TokenKind::Do)? {
+            self.block()?;
+            self.close_scope();
+            self.expect(TokenKind::End)?;
+        } else {
+            self.expression()?;
+            self.close_scope();
+        }
+        self.ascend();
         Ok(())
     }
 
@@ -769,6 +844,26 @@ impl<'a> Resolver<'a> {
         };
         loop {
             match self.peek() {
+                Some(TokenKind::SafeNav) => {
+                    self.read_bare(&mut bare);
+                    self.bump()?;
+                    match self.peek() {
+                        Some(TokenKind::Name) => {
+                            self.bump()?;
+                        }
+                        Some(TokenKind::LBracket) => {
+                            self.bump()?;
+                            self.expression()?;
+                            self.expect(TokenKind::RBracket)?;
+                        }
+                        Some(TokenKind::Colon) => {
+                            self.bump()?;
+                            self.expect(TokenKind::Name)?;
+                            self.call_arguments()?;
+                        }
+                        _ => self.call_arguments()?,
+                    }
+                }
                 Some(TokenKind::Dot) => {
                     self.read_bare(&mut bare);
                     self.bump()?;
@@ -784,6 +879,7 @@ impl<'a> Resolver<'a> {
                     self.read_bare(&mut bare);
                     self.bump()?;
                     self.expect(TokenKind::Name)?;
+                    self.eat(TokenKind::SafeNav)?;
                     self.call_arguments()?;
                 }
                 Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String { .. }) => {
@@ -1067,6 +1163,45 @@ mod tests {
         }
         let deep = format!("x = {}1{}\n", "(".repeat(500), ")".repeat(500));
         assert!(resolve(&Source::new("t.lua", deep)).is_none());
+    }
+
+    #[test]
+    fn extended_syntax_parses() {
+        assert_eq!(
+            usage(
+                "const a, b = 1, 2\nconst function f(p) return p end\nlocal c = 0\n\
+                 c += a & b | ~c\nlocal g = |x, y| -> x ?? y ? f?.(x) : c?.d\n\
+                 local h = z -> do return z end\nt[c] ~= g(1)\n"
+            ),
+            vec![
+                entry("a", 1, 0),
+                entry("b", 1, 0),
+                entry("f", 1, 0),
+                entry("p", 1, 0),
+                entry("c", 4, 1),
+                entry("x", 2, 0),
+                entry("y", 1, 0),
+                entry("g", 1, 0),
+                entry("z", 1, 0),
+                entry("h", 0, 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn short_function_parameters_belong_to_their_body() {
+        let src = "local x = 1\nlocal f = x -> x\nprint(x)\n";
+        let source = Source::new("t.lua", src);
+        let resolution = resolve(&source).expect("parses");
+        let parameter = &resolution.variables[1];
+        assert_eq!(parameter.kind, DeclarationKind::Parameter);
+        assert_eq!(parameter.shadows, Some(0));
+        assert_eq!(&src[parameter.scope.clone()], "x -> x\n");
+        assert_eq!(
+            parameter.function.map(|token| &src[token.range()]),
+            Some("x")
+        );
+        assert_eq!(resolution.variables[0].reads, 1);
     }
 
     #[test]

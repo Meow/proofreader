@@ -98,6 +98,12 @@ mod tests {
     }
 
     #[test]
+    fn leaves_empty_short_function_parameters_alone() {
+        expect_no_offenses(READER, "f(|| -> 1, ||->2)\n");
+        expect_correction(READER, "x = a || (|| -> b)\n", "x = a or (|| -> b)\n");
+    }
+
+    #[test]
     fn accepts_keywords_and_strings() {
         expect_no_offenses(READER, "if a and b or c then end\n");
         expect_no_offenses(READER, "s = 'a && b || c'\n-- a && b\n");

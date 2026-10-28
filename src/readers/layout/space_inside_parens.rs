@@ -4,10 +4,11 @@ use yaml_rust2::Yaml;
 
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
-use crate::readers::layout::spacing::{inside_gaps, spaced_gap_offense};
+use crate::readers::layout::spacing::{Gap, Side, inside_gaps, spaced_gap_offense};
 use crate::token::TokenKind;
 
-/// Checks the whitespace directly inside `(` and `)` on the same line.
+/// Checks the whitespace directly inside `(` and `)` on the same line, and inside the `|` bars
+/// around the parameters of a short function (`|a, b| -> a + b`), which follow the same style.
 ///
 /// With `EnforcedStyle: no_space` (the default) there is none, `( )` included; with `space`
 /// non-empty parentheses need exactly one space after `(` and before `)` (`f( a, b )`) and
@@ -31,11 +32,22 @@ impl Reader for SpaceInsideParens {
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let spaced = ctx.option_str("EnforcedStyle", "no_space") == "space";
-        for (side, gap) in inside_gaps(source, TokenKind::LParen, TokenKind::RParen) {
+        let pairs = [
+            (TokenKind::LParen, TokenKind::RParen, "parentheses"),
+            (TokenKind::Bar, TokenKind::Bar, "parameter bars"),
+        ];
+        let mut gaps: Vec<(Side, Gap, &str)> = pairs
+            .into_iter()
+            .flat_map(|(open, close, noun)| {
+                inside_gaps(source, open, close)
+                    .into_iter()
+                    .map(move |(side, gap)| (side, gap, noun))
+            })
+            .collect();
+        gaps.sort_by_key(|(_, gap, _)| gap.before.start);
+        for (side, gap, noun) in gaps {
             if spaced {
-                if let Some((range, message, edit)) =
-                    spaced_gap_offense(source, side, gap, "parentheses")
-                {
+                if let Some((range, message, edit)) = spaced_gap_offense(source, side, gap, noun) {
                     ctx.add_offense_with_fix(range, message, vec![edit]);
                 }
                 continue;
@@ -45,7 +57,7 @@ impl Reader for SpaceInsideParens {
             }
             ctx.add_offense_with_fix(
                 gap.range(),
-                "Space inside parentheses detected.",
+                format!("Space inside {noun} detected."),
                 vec![Edit::remove(gap.range())],
             );
         }
@@ -82,6 +94,26 @@ mod tests {
     #[test]
     fn autocorrects() {
         expect_correction(READER, "f( a, ( b ) )\nf( )\n", "f(a, (b))\nf()\n");
+    }
+
+    #[test]
+    fn checks_short_function_bars() {
+        let message = "Space inside parameter bars detected.";
+        expect_offenses(
+            READER,
+            "f = | a, b | -> a\n",
+            &[(1, 6, message), (1, 11, message)],
+        );
+        expect_correction(
+            READER,
+            "f = | a | -> | | -> ( a )\n",
+            "f = |a| -> || -> (a)\n",
+        );
+        expect_no_offenses(READER, "f = |a, b| -> a | b\ng = |...| -> x | y\n");
+        assert_eq!(
+            autocorrect_with(READER, "f = |a| -> || -> 1\n", "EnforcedStyle: space"),
+            "f = | a | -> || -> 1\n"
+        );
     }
 
     #[test]

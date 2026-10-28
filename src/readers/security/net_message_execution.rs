@@ -334,12 +334,20 @@ impl Taint<'_> {
         match &expression.kind {
             ExpressionKind::Name(_) => self.is_tainted_key(expression),
             ExpressionKind::Parenthesized(inner) => self.is_tainted(inner),
-            ExpressionKind::Field { object, .. } => {
+            ExpressionKind::Field { object, .. } | ExpressionKind::Index { object, .. } => {
                 self.is_tainted_key(expression) || self.is_tainted(object)
             }
-            ExpressionKind::Index { object, .. } => {
-                self.is_tainted_key(expression) || self.is_tainted(object)
+            ExpressionKind::SafeField { object, .. } | ExpressionKind::SafeIndex { object, .. } => {
+                self.is_tainted(object)
             }
+            ExpressionKind::SafeCall { callee, arguments } => {
+                self.is_tainted(callee) || arguments.values.iter().any(|a| self.is_tainted(a))
+            }
+            ExpressionKind::Ternary {
+                consequent,
+                alternative,
+                ..
+            } => self.is_tainted(consequent) || self.is_tainted(alternative),
             ExpressionKind::Call { callee, arguments } => {
                 if let Some(function) = callee.dotted_name(self.binder.source) {
                     if self.sources.contains(&function) {
@@ -352,6 +360,9 @@ impl Taint<'_> {
                 self.is_tainted(callee) || arguments.values.iter().any(|a| self.is_tainted(a))
             }
             ExpressionKind::MethodCall {
+                object, arguments, ..
+            }
+            | ExpressionKind::SafeMethodCall {
                 object, arguments, ..
             } => self.is_tainted(object) || arguments.values.iter().any(|a| self.is_tainted(a)),
             ExpressionKind::Binary {

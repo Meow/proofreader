@@ -7,7 +7,7 @@ use std::ops::Range;
 pub enum TokenKind {
     /// An identifier; non-ASCII bytes are allowed, as in GMod.
     Name,
-    /// A numeric literal such as `12`, `0xFF`, `.5` or `1.5e-3`.
+    /// A numeric literal such as `12`, `0xFF`, `.5`, `1.5e-3` or `1_000`.
     Number,
     /// A string literal; `long` for `[[...]]` / `[==[...]==]` strings.
     String {
@@ -27,6 +27,9 @@ pub enum TokenKind {
     And,
     /// `break`
     Break,
+    /// `const` where it declares constants (`const x = 1`, `const function f()`); elsewhere
+    /// `const` is a [`TokenKind::Name`].
+    Const,
     /// `continue` (GLua)
     Continue,
     /// `do`
@@ -85,7 +88,8 @@ pub enum TokenKind {
     Hash,
     /// `==`
     Eq,
-    /// `!=` or `~=`; check the token text to tell them apart.
+    /// `!=` or `~=`; check the token text to tell them apart. A `~=` starting a statement's
+    /// operator position is xor assignment, a [`TokenKind::CompoundAssign`].
     Ne,
     /// `<`
     Lt,
@@ -97,6 +101,10 @@ pub enum TokenKind {
     Ge,
     /// `=`
     Assign,
+    /// A compound assignment operator: `+=`, `-=`, `*=`, `/=`, `%=`, `..=`, `&=`, `|=`, `<<=`,
+    /// `>>=`, `~>>=`, and `~=` where it follows the target of an assignment statement (xor
+    /// assignment). The token text holds the operator.
+    CompoundAssign,
     /// `(`
     LParen,
     /// `)`
@@ -111,8 +119,18 @@ pub enum TokenKind {
     RBracket,
     /// `;`
     Semicolon,
-    /// `:`
+    /// `:` of a method call, or one of the two colons around a label (`::name::`).
     Colon,
+    /// The `:` separating the branches of a ternary `c ? a : b`.
+    TernaryColon,
+    /// The `?` of a ternary `c ? a : b`.
+    Question,
+    /// `?.`, safe navigation.
+    SafeNav,
+    /// `??`, nil coalescing.
+    Coalesce,
+    /// `->` of a short function.
+    Arrow,
     /// `,`
     Comma,
     /// `.`
@@ -123,8 +141,21 @@ pub enum TokenKind {
     Dots,
     /// `!` (GLua)
     Bang,
-    /// A lone `~`.
+    /// A lone `~`: bitwise not, or bitwise xor between two operands.
     Tilde,
+    /// `&`, bitwise and.
+    Ampersand,
+    /// `|`, bitwise or.
+    Pipe,
+    /// A `|` delimiting the parameters of a short function (`|a, b| -> a + b`); `||` before
+    /// `->` is lexed as two of them.
+    Bar,
+    /// `<<`
+    Shl,
+    /// `>>`
+    Shr,
+    /// `~>>`, arithmetic shift right.
+    Sar,
     /// `&&` (GLua)
     AndAnd,
     /// `||` (GLua)
@@ -183,6 +214,7 @@ impl TokenKind {
             self,
             TokenKind::And
                 | TokenKind::Break
+                | TokenKind::Const
                 | TokenKind::Continue
                 | TokenKind::Do
                 | TokenKind::Else

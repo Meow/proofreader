@@ -118,7 +118,7 @@ Layout/SpaceAfterComma:
   Severity: convention
   AutoCorrect: true
 
-# Checks for space between `!` and its operand.
+# Checks for space between `!` (or a unary `~`) and its operand.
 Layout/SpaceAfterNot:
   Enabled: true
   Severity: convention
@@ -207,6 +207,12 @@ Lint/DuplicateRequire:
 Lint/DuplicateTableKey:
   Enabled: true
   Severity: warning
+  AutoCorrect: true
+
+# Checks for the syntax extensions of LuaJIT 3.0, which stock Garry's Mod does not accept.
+Lint/ExtendedSyntax:
+  Enabled: false
+  Severity: error
   AutoCorrect: true
 
 # Checks that format calls pass as many arguments as their format string expects.
@@ -524,6 +530,12 @@ Style/AndOr:
   AutoCorrect: true
   EnforcedStyle: keywords
 
+# Checks for calls of the `bit` library that a bit operator writes directly.
+Style/BitOperators:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+
 # Checks the parentheses of calls with a single string or table argument.
 Style/CallParentheses:
   Enabled: false
@@ -537,6 +549,12 @@ Style/CommentStyle:
   Severity: convention
   AutoCorrect: true
   EnforcedStyle: lua
+
+# Checks for `x = x + e` where the compound assignment `x += e` says the same.
+Style/CompoundAssignment:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
 
 # Checks that function definitions are preceded by a doc comment.
 Style/DocumentationMethod:
@@ -574,6 +592,13 @@ Style/Not:
   AutoCorrect: true
   EnforcedStyle: bang
 
+# Checks that long decimal integers are written with `_` between groups of three digits.
+Style/NumericSeparators:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+  MinDigits: 5
+
 # Checks for (or requires) parentheses around the condition of `if`, `elseif`, `while` and `until`.
 Style/ParenthesesAroundCondition:
   Enabled: true
@@ -594,12 +619,24 @@ Style/Semicolon:
   AutoCorrect: true
   EnforcedStyle: omit
 
+# Checks for anonymous functions that only return an expression, which a short function writes directly.
+Style/ShortFunction:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
+
 # Checks that string literals use the configured quotes.
 Style/StringLiterals:
   Enabled: true
   Severity: convention
   AutoCorrect: true
   EnforcedStyle: single_quotes
+
+# Checks for `c and a or b` where the ternary `c ? a : b` says the same.
+Style/TernaryOperator:
+  Enabled: false
+  Severity: convention
+  AutoCorrect: true
 
 # Checks for a trailing comma after the last item of a table.
 Style/TrailingCommaInTable:

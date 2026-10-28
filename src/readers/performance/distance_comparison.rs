@@ -140,7 +140,10 @@ impl<'t> Finder<'_> {
             (None, ExpressionKind::Call { arguments, .. }) => {
                 let argument = &arguments.values[0];
                 let text = &self.source.text[argument.range.clone()];
-                let replacement = if matches!(argument.kind, ExpressionKind::Binary { .. }) {
+                let replacement = if matches!(
+                    argument.kind,
+                    ExpressionKind::Binary { .. } | ExpressionKind::Ternary { .. }
+                ) {
                     format!("({text})")
                 } else {
                     text.to_owned()
@@ -404,6 +407,20 @@ mod tests {
         let offenses = inspect(READER, "if a:Distance(b) < -1 then end\n");
         assert_eq!(offenses.len(), 1);
         assert!(!offenses[0].correctable());
+    }
+
+    #[test]
+    fn keeps_the_extended_syntax_grouped() {
+        let corrected = autocorrect(
+            READER,
+            "a = math.sqrt(c ? x : y) < 2\nb = math.sqrt(x | y) < r\nd = p:Distance(q) < (c ? 1 : 2)\n\
+             e = p:Distance(q) < cfg?.range\nf = p?.:Distance(q) < 1\n",
+        );
+        assert_eq!(
+            corrected,
+            "a = (c ? x : y) < 4\nb = (x | y) < r * r\nd = p:DistToSqr(q) < (c ? 1 : 2) ^ 2\n\
+             e = p:DistToSqr(q) < cfg?.range ^ 2\nf = p?.:Distance(q) < 1\n"
+        );
     }
 
     #[test]

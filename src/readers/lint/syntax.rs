@@ -11,7 +11,9 @@ use crate::token::TokenKind;
 /// unterminated strings and block comments, characters that are not GLua, and the first
 /// unbalanced bracket, `end` or `until`. When none of those is found, the file is parsed and the
 /// first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``), including
-/// code after a `return` in the same block and expressions standing as statements.
+/// code after a `return` in the same block and expressions standing as statements. The syntax
+/// extensions of LuaJIT 3.0 are valid syntax; `Lint/ExtendedSyntax` reports them where they are
+/// not wanted.
 ///
 /// In Lumen templates markup is an operand and its braces are not brackets. The first piece of
 /// malformed markup is reported in the words of the Lumen compiler (`'<view>' is never closed.`,
@@ -52,7 +54,7 @@ impl Reader for Syntax {
                     continue;
                 }
                 TokenKind::Unknown if token.start == 0 && text == "\u{feff}" => continue,
-                TokenKind::Unknown | TokenKind::Tilde => {
+                TokenKind::Unknown => {
                     ctx.add_offense(token.range(), format!("Unexpected character `{text}`."));
                     continue;
                 }
@@ -166,6 +168,31 @@ mod tests {
     }
 
     #[test]
+    fn accepts_the_extended_syntax() {
+        expect_no_offenses(
+            READER,
+            "const MAX = 1_000_000\nlocal t = { 1 << 4, 0xFF & ~MAX, 3 | 4 ~ 5, -256 ~>> 4 }\n\
+             local s = t?.a?.[1]?.(2) ?? o?.:m() ?? o:m?.()\nlocal c = s ? 'y' : t ? 1 : 2\n\
+             s ..= '\\u{48}' s ~= 1 s <<= 2 t.x += 1\n;; f(|a, b| -> a + b, x -> x, || -> do end)\n\
+             const function g() return;; end\n",
+        );
+        expect_offense(
+            READER,
+            "f(|a, b -> a)\n",
+            1,
+            3,
+            "Unexpected `|`; expected an expression.",
+        );
+        expect_offense(
+            READER,
+            "x = c ? 1 2\n",
+            1,
+            11,
+            "Unexpected `2`; expected `:` of the ternary.",
+        );
+    }
+
+    #[test]
     fn reports_with_fatal_severity() {
         let offenses = inspect(READER, "x = 'a\n");
         assert_eq!(offenses.len(), 1);
@@ -186,7 +213,13 @@ mod tests {
     #[test]
     fn flags_unknown_characters() {
         expect_offense(READER, "x = 1 @ 2\n", 1, 7, "Unexpected character `@`.");
-        expect_offense(READER, "x = ~y\n", 1, 5, "Unexpected character `~`.");
+        expect_offense(
+            READER,
+            "x = a ~> b\n",
+            1,
+            8,
+            "Unexpected `>`; expected an expression.",
+        );
     }
 
     #[test]

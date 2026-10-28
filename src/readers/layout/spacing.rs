@@ -79,7 +79,9 @@ fn ends_operand(source: &Source, token: &Token) -> bool {
 }
 
 /// Whether the code token at `code_index` is a binary operator (or `=`) whose surroundings
-/// `Layout/SpaceAroundOperators` checks; `..` included, unary `-` excluded.
+/// `Layout/SpaceAroundOperators` checks; `..`, the compound assignment operators, the bit
+/// operators, `??`, the `?` and `:` of a ternary and the `->` of a short function included,
+/// unary `-` and `~` excluded.
 pub fn is_binary_operator(source: &Source, code_index: usize) -> bool {
     let Some(token) = source.code_token(code_index) else {
         return false;
@@ -101,8 +103,18 @@ pub fn is_binary_operator(source: &Source, code_index: usize) -> bool {
         | TokenKind::Or
         | TokenKind::AndAnd
         | TokenKind::OrOr
-        | TokenKind::Concat => true,
-        TokenKind::Minus => {
+        | TokenKind::Concat
+        | TokenKind::CompoundAssign
+        | TokenKind::Ampersand
+        | TokenKind::Pipe
+        | TokenKind::Shl
+        | TokenKind::Shr
+        | TokenKind::Sar
+        | TokenKind::Coalesce
+        | TokenKind::Question
+        | TokenKind::TernaryColon
+        | TokenKind::Arrow => true,
+        TokenKind::Minus | TokenKind::Tilde => {
             prev_significant(source, code_index).is_some_and(|prev| ends_operand(source, prev))
         }
         _ => false,
@@ -129,14 +141,20 @@ pub enum Side {
 }
 
 /// The gaps on the inside of every `open`/`close` delimiter pair that lie on one line, skipping
-/// gaps next to a comment.
+/// gaps next to a comment. When `open` and `close` are the same kind (the [`TokenKind::Bar`]s
+/// around short function parameters), the delimiters alternate between opening and closing.
 pub fn inside_gaps(source: &Source, open: TokenKind, close: TokenKind) -> Vec<(Side, Gap<'_>)> {
     let mut gaps = Vec::new();
+    let mut opened = false;
     for code_index in 0..source.code_token_indexes().len() {
         let Some(token) = source.code_token(code_index) else {
             continue;
         };
-        if token.kind == open {
+        let opening = token.kind == open && !(open == close && opened);
+        if token.kind == open && open == close {
+            opened = !opened;
+        }
+        if opening {
             if let Some(gap) =
                 gap_after(source, code_index).filter(|gap| !gap.after.kind.is_comment())
             {

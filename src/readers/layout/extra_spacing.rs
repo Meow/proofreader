@@ -94,6 +94,11 @@ fn owned_elsewhere(source: &Source, code_index: usize, gap: Gap) -> bool {
         || (before == TokenKind::Function && after == TokenKind::LParen)
         || (before == TokenKind::Markup && opens_splice(source.text_of(gap.before)))
         || source.closes_splice(gap.after)
+        || matches!(
+            before,
+            TokenKind::SafeNav | TokenKind::Tilde | TokenKind::Bar
+        )
+        || matches!(after, TokenKind::SafeNav | TokenKind::Bar)
 }
 
 /// Reports the `=` signs of every assignment group that is not aligned yet, with fixes that move
@@ -163,6 +168,15 @@ mod tests {
             "f(  a  )\nt = {  a  }\nt[  1  ] = 1\nf(a  , b)\nf  (a)\nx = !  y\n",
         );
         expect_no_offenses(READER, "f = function  (a) end\n");
+    }
+
+    #[test]
+    fn leaves_the_extended_syntax_to_the_other_readers() {
+        expect_no_offenses(
+            READER,
+            "x = a  ?.  b\ny = ~  x\nf = |  a  | -> a\nx  +=  1\nz = c  ?  1  :  2\n",
+        );
+        expect_offense(READER, "f = |a| -> g(a,  1)\n", 1, 16, MESSAGE);
     }
 
     #[test]

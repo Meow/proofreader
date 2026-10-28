@@ -1,5 +1,7 @@
 //! Finds the names a file declares: local variables, parameters, loop variables and named
-//! function definitions. Shared by the naming, lint and style readers.
+//! function definitions. Shared by the naming, lint and style readers. A `const` declaration
+//! declares locals like `local`, and the parameters of a short function (`|a, b| -> a + b`,
+//! `a -> a`) are parameters.
 
 use crate::source::Source;
 use crate::token::{Token, TokenKind};
@@ -7,9 +9,9 @@ use crate::token::{Token, TokenKind};
 /// How a variable name is introduced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationKind {
-    /// A name in a `local a, b = ...` statement.
+    /// A name in a `local a, b = ...` or `const a, b = ...` statement.
     Local,
-    /// The name of a `local function f()` definition.
+    /// The name of a `local function f()` or `const function f()` definition.
     LocalFunction,
     /// A function parameter (named or anonymous function).
     Parameter,
@@ -26,14 +28,16 @@ pub struct Declaration {
     pub token: Token,
 }
 
-/// A named function definition: `function a.b:c(`, `function f(` or `local function f(`.
+/// A named function definition: `function a.b:c(`, `function f(`, `local function f(` or
+/// `const function f(`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionDefinition {
-    /// The first token of the statement: `local` for local functions, `function` otherwise.
+    /// The first token of the statement: `local` (or `const`) for local functions, `function`
+    /// otherwise.
     pub start: Token,
     /// The `function` keyword.
     pub keyword: Token,
-    /// Whether the definition is a `local function`.
+    /// Whether the definition is a `local function` or a `const function`.
     pub local: bool,
     /// The full name as written, without whitespace (`a.b:c`).
     pub name: String,
@@ -56,7 +60,7 @@ pub fn declarations(source: &Source) -> Vec<Declaration> {
     let mut found = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
-            TokenKind::Local => match tokens.get(index + 1) {
+            TokenKind::Local | TokenKind::Const => match tokens.get(index + 1) {
                 Some(next) if next.kind == TokenKind::Function => {
                     if let Some(name) = tokens.get(index + 2).filter(|t| t.kind == TokenKind::Name)
                     {
@@ -75,6 +79,15 @@ pub fn declarations(source: &Source) -> Vec<Declaration> {
                 if let Some(open) = parameter_list_start(&tokens, index) {
                     collect_parameters(&tokens, open + 1, &mut found);
                 }
+            }
+            TokenKind::Bar if opens_short_parameters(&tokens, index) => {
+                collect_parameters(&tokens, index + 1, &mut found);
+            }
+            TokenKind::Name if tokens.get(index + 1).map(|t| t.kind) == Some(TokenKind::Arrow) => {
+                found.push(Declaration {
+                    kind: DeclarationKind::Parameter,
+                    token: *token,
+                });
             }
             _ => {}
         }
@@ -101,7 +114,20 @@ fn collect_names(
     }
 }
 
-/// Pushes the parameter names of the list starting at `index` (just after `(`).
+/// Whether the `|` at `index` opens the parameters of a short function rather than closing them.
+fn opens_short_parameters(tokens: &[Token], index: usize) -> bool {
+    tokens[index + 1..]
+        .iter()
+        .find(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Name | TokenKind::Comma | TokenKind::Dots
+            )
+        })
+        .is_some_and(|token| token.kind == TokenKind::Bar)
+}
+
+/// Pushes the parameter names of the list starting at `index` (just after `(` or `|`).
 fn collect_parameters(tokens: &[Token], mut index: usize, found: &mut Vec<Declaration>) {
     while let Some(token) = tokens.get(index) {
         match token.kind {
@@ -160,7 +186,7 @@ pub fn function_definitions(source: &Source) -> Vec<FunctionDefinition> {
         let local = index
             .checked_sub(1)
             .and_then(|previous| tokens.get(previous))
-            .filter(|t| t.kind == TokenKind::Local);
+            .filter(|t| matches!(t.kind, TokenKind::Local | TokenKind::Const));
         let name = tokens[index + 1..=end]
             .iter()
             .map(|token| source.text_of(token))
@@ -212,6 +238,35 @@ mod tests {
         .map(|(kind, name)| (kind, name.to_owned()))
         .collect();
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn finds_constants_and_short_function_parameters() {
+        use DeclarationKind::*;
+        let found = declared(
+            "const a, b = 1\nconst function f(x) end\nlocal g = |p, q, ...| -> p\n\
+             h(r -> r, || -> 1, |s| -> do end)\nlocal t = u | v | w\n",
+        );
+        let expected: Vec<(DeclarationKind, String)> = [
+            (Local, "a"),
+            (Local, "b"),
+            (LocalFunction, "f"),
+            (Parameter, "x"),
+            (Local, "g"),
+            (Parameter, "p"),
+            (Parameter, "q"),
+            (Parameter, "r"),
+            (Parameter, "s"),
+            (Local, "t"),
+        ]
+        .into_iter()
+        .map(|(kind, name)| (kind, name.to_owned()))
+        .collect();
+        assert_eq!(found, expected);
+        let source = Source::new("t.lua", "const function f() end\n");
+        let definitions = function_definitions(&source);
+        assert!(definitions[0].local);
+        assert_eq!(definitions[0].start.kind, TokenKind::Const);
     }
 
     #[test]

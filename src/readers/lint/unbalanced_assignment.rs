@@ -127,6 +127,21 @@ mod tests {
     }
 
     #[test]
+    fn understands_the_extended_syntax() {
+        expect_no_offenses(
+            READER,
+            "local a, b = x?.f()\nlocal c, d = o?.:m()\nx += 1\nconst e, g = f()\n",
+        );
+        expect_offense(
+            READER,
+            "const a, b = 1\n",
+            1,
+            10,
+            "`b` is assigned `nil`: there are fewer values than targets. [1/2]",
+        );
+    }
+
+    #[test]
     fn flags_discarded_values() {
         expect_offense(
             READER,

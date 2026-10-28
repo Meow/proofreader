@@ -1,7 +1,8 @@
 //! A minimal tracker of brackets and block keywords, shared by the lint readers.
 //!
 //! It does not parse expressions; it only pairs `(`/`)`, `[`/`]`, `{`/`}`, block openers with
-//! `end`, and `repeat` with `until`. `for`/`while` and their `do` share one `end`. Markup tokens
+//! `end`, and `repeat` with `until`. `for`/`while` and their `do` share one `end`; the `do` of a
+//! short function (`|a| -> do ... end`) opens a block of its own. Markup tokens
 //! of Lumen templates open and close nothing: the braces around Lua spliced into markup belong
 //! to them.
 
@@ -73,6 +74,8 @@ pub enum Step {
 pub struct Nesting {
     /// Open constructs, innermost last.
     pub frames: Vec<Frame>,
+    /// Whether the last token fed was the `->` of a short function.
+    after_arrow: bool,
 }
 
 impl Nesting {
@@ -83,6 +86,7 @@ impl Nesting {
 
     /// Feeds the next code token (comments must be skipped by the caller).
     pub fn step(&mut self, token: &Token) -> Step {
+        let after_arrow = std::mem::replace(&mut self.after_arrow, token.kind == TokenKind::Arrow);
         let opener = match token.kind {
             TokenKind::LParen => Opener::Paren,
             TokenKind::LBracket => Opener::Bracket,
@@ -91,6 +95,7 @@ impl Nesting {
             TokenKind::If => Opener::If,
             TokenKind::For | TokenKind::While => Opener::Loop { awaiting_do: true },
             TokenKind::Repeat => Opener::Repeat,
+            TokenKind::Do if after_arrow => Opener::Do,
             TokenKind::Do => return self.step_do(token),
             TokenKind::RParen => return self.close(|o| o == Opener::Paren),
             TokenKind::RBracket => return self.close(|o| o == Opener::Bracket),
@@ -178,6 +183,10 @@ mod tests {
         );
         assert_eq!(
             final_depth("while f(function() do end end) do end\n"),
+            (0, 0)
+        );
+        assert_eq!(
+            final_depth("for k in f, || -> do return 1 end do end\nx = |a| -> a\n"),
             (0, 0)
         );
     }

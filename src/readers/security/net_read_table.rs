@@ -81,6 +81,16 @@ mod tests {
     }
 
     #[test]
+    fn flags_short_function_handlers() {
+        expect_offenses(
+            READER,
+            "net.Receive('a', |len, ply| -> handle(net.ReadTable()))\n\
+             net.Receive('b', || -> do\n  local data = net.ReadTable()\nend)\n",
+            &[(1, 39, MESSAGE), (3, 16, MESSAGE)],
+        );
+    }
+
+    #[test]
     fn flags_named_handlers() {
         expect_offense(
             READER,

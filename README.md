@@ -2,7 +2,9 @@
 
 A RuboCop-like linter and autocorrector for **GLua** (Garry's Mod Lua), encoding the code style of the Flux
 framework. It understands the GLua extensions (`!`, `!=`, `&&`, `||`,
-`continue`, `//` and `/* */` comments) and inspects hundreds of files in a few milliseconds.
+`continue`, `//` and `/* */` comments) and the syntax extensions of LuaJIT 3.0 (bit operators, `c ? a : b`,
+`?.`, `??`, `x += 1`, `const`, `|a| -> a`, `1_000`; see [LuaJIT 3.0 syntax](#luajit-30-syntax)), and inspects
+hundreds of files in a few milliseconds.
 
 Besides GLua files (`.lua`) it inspects Flux's Lumen templates (`.lumen`), GLua with JSX-like markup in
 expression position; see [Lumen templates](#lumen-templates).
@@ -156,7 +158,7 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (77 in total, 9 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (83 in total, 15 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
@@ -179,17 +181,17 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation; with `EnforcedStyle: tabs`, tabs for whole levels followed by fewer than `IndentationWidth` alignment spaces. `Layout/IndentationWidth` and `Layout/IndentationConsistency` count a tab as reaching the next multiple of their width (keep it equal to `IndentationWidth`); `Layout/LineLength` does not break tab-indented lines. | convention | yes | `EnforcedStyle: spaces` (or `tabs`), `IndentationWidth: 2` (spaces per tab) |
 | `Layout/IndentationWidth` | The first body line of a block is `Width` deeper than its opener line; closers align with the opener line. A tab counts as reaching the next multiple of `Width` columns; the fix re-indents with spaces. | convention | yes | `Width: 2` |
 | `Layout/LeadingCommentSpace` | A space after `--`, `---` and `//` (block comments and dash-only lines exempt). | convention | yes | |
-| `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
+| `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`??`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. The parameters of a short function (`\|a, b\|`) are never split. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
 | `Layout/SpaceAfterComma` | A space after every comma followed by code. | convention | yes | |
-| `Layout/SpaceAfterNot` | No space between `!` and its operand. | convention | yes | |
-| `Layout/SpaceAroundOperators` | One space around binary operators and `=`; none around `..`. Unary `-`, `#`, `!`, `not` are not binary. | convention | yes | `ConcatStyle: no_space` (or `space`), `AllowForAlignment: true` (extra spaces before an operator that lines up with the same operator on an adjacent line) |
+| `Layout/SpaceAfterNot` | No space between `!` (or the bitwise not `~`) and its operand. | convention | yes | |
+| `Layout/SpaceAroundOperators` | One space around binary operators and `=`; none around `..`. The compound assignment operators (`+=`), the bit operators, `??`, the `?` and `:` of a ternary and the `->` of a short function are binary operators; `?.` takes no space on either side. Unary `-`, `#`, `!`, `~`, `not` are not binary. | convention | yes | `ConcatStyle: no_space` (or `space`), `AllowForAlignment: true` (extra spaces before an operator that lines up with the same operator on an adjacent line) |
 | `Layout/SpaceBeforeAnonymousFunctionParen` | No space between `function` and the `(` of an anonymous function: `function(a)`; exactly one with `EnforcedStyle: space` (`function (a)`). | convention | yes | `EnforcedStyle: no_space` (or `space`) |
 | `Layout/SpaceBeforeComma` | No space before a comma. | convention | yes | |
 | `Layout/SpaceBeforeComment` | A space between code and a trailing comment. | convention | yes | |
 | `Layout/SpaceBeforeParen` | No space between a function name and its `(`. | convention | yes | |
 | `Layout/SpaceInsideBraces` | `{ a = 1 }` with one space inside non-empty braces, `{}` when empty. | convention | yes | `EnforcedStyle: space` (or `no_space`) |
 | `Layout/SpaceInsideBrackets` | No spaces inside `[` `]` of indexing and table keys; exactly one with `EnforcedStyle: space`; with `space_when_nested`, exactly one inside a pair holding another pair (`a[ b[i] ]`) and none otherwise. | convention | yes | `EnforcedStyle: no_space` (or `space`, `space_when_nested`) |
-| `Layout/SpaceInsideParens` | No spaces inside `(` `)`; with `EnforcedStyle: space`, exactly one inside non-empty parentheses and none in `()`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
+| `Layout/SpaceInsideParens` | No spaces inside `(` `)` and the `\|` `\|` around the parameters of a short function; with `EnforcedStyle: space`, exactly one inside non-empty ones and none in `()` and `\|\|`. | convention | yes | `EnforcedStyle: no_space` (or `space`) |
 | `Layout/TrailingEmptyLines` | Exactly one `\n` at the end of the file. | convention | yes | |
 | `Layout/TrailingWhitespace` | No trailing spaces or tabs (outside strings). | convention | yes | |
 
@@ -198,17 +200,22 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
 | `Style/AndOr` | `and`/`or` instead of `&&`/`\|\|`; with `EnforcedStyle: symbols`, `&&`/`\|\|` instead of `and`/`or`. | convention | yes | `EnforcedStyle: keywords` (or `symbols`) |
+| `Style/BitOperators` | Calls of the global `bit` library that a bit operator of LuaJIT 3.0 writes directly: `bit.band(a, b, ...)` to `a & b & ...`, `bor` to `\|`, `bxor` to `~`, `lshift`/`rshift`/`arshift` to `<<`/`>>`/`~>>`, `bnot(a)` to `~a`; see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/CallParentheses` | Parentheses around the single string or table literal argument of a call: `f('x')`, `f({ 1 })`, `obj:m('x')`. The `omit` styles write `require 'x'` and `f { 1 }` (one space), and keep parentheses separated from their argument by a line break. Calls with comments in the way are not corrected. Disabled by default (Flux writes `require_relative 'x'` and `class 'X'` on purpose). | convention | yes | `EnforcedStyle: always` (or `omit`, `omit_for_strings`, `omit_for_tables`) |
 | `Style/CommentStyle` | Comment markers: with `lua`, `//` → `--` (`///` → `---`) and `/* */` → `--[[ ]]` (with `=` levels when the body holds `]]`); with `c`, `--` → `//` and `--[[ ]]` → `/* */`, except doc comments (a run of comment-only lines containing a `---` line, kept for LDoc/EmmyLua and the documentation readers) and block comments containing `*/`. Lumen markup comments are never touched. | convention | yes | `EnforcedStyle: lua` (or `c`) |
+| `Style/CompoundAssignment` | `x = x op e` that a compound assignment writes once (`x += e`) for `+ - * / % ..` and the bit operators (not `^`, not the xor `~=`), when the target is a name, a field of a name or an index of a name by a name or a literal; see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/DocumentationMethod` | Every named function definition is directly preceded by a doc comment starting with `---`. | convention | no | `RequireForLocalFunctions: false` |
 | `Style/IncompleteDocumentation` | A function whose doc comment has a parameter or return tag documents every named parameter (names starting with `_` exempt) and has an `@return` (or `@treturn`) when its own body returns a value other than `nil`. Local functions are skipped unless `RequireForLocalFunctions` is set. Disabled by default. | convention | no | `RequireForLocalFunctions: false`, `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
-| `Style/InequalityOperator` | `!=` instead of `~=`; with `EnforcedStyle: tilde`, `~=` instead of `!=`. | convention | yes | `EnforcedStyle: bang` (or `tilde`) |
+| `Style/InequalityOperator` | `!=` instead of `~=`; with `EnforcedStyle: tilde`, `~=` instead of `!=`. A `~=` after the target of an assignment statement (`flags ~= mask`) is the xor assignment of LuaJIT 3.0 and left alone. | convention | yes | `EnforcedStyle: bang` (or `tilde`) |
 | `Style/InvertIf` | An `if` with an `else` (no `elseif`) whose `else` is a single `return` with at most one value (or `break`/`continue` in a loop), whose `if` branch has at least `MinBodyLength` statements and does not end by leaving, followed by more code: invert it into a guard clause. Disabled by default. | convention | no | `MinBodyLength: 3` |
 | `Style/Not` | `!` instead of `not`; with `EnforcedStyle: keyword`, `not` instead of `!` (`!!x` becomes `not not x`). | convention | yes | `EnforcedStyle: bang` (or `keyword`) |
+| `Style/NumericSeparators` | Decimal integer literals of at least `MinDigits` digits with `_` every three digits from the right (`1_000_000`), and no literal with `_` groups other than threes (`1_0000`); hexadecimal literals, fractions, exponents and suffixes are left alone. The fix keeps aligned columns after the literal in place. Disabled by default. | convention | yes | `MinDigits: 5` |
 | `Style/ParenthesesAroundCondition` | No parentheses wrapping the whole condition of `if`, `elseif`, `while` or `until`; with `EnforcedStyle: require` (vanilla GMod's `if ( x ) then`), every such condition is one parenthesised expression (`if (a) and (b) then` is wrapped as a whole). | convention | yes | `EnforcedStyle: omit` (or `require`) |
 | `Style/PreferredLocalAlias` | Uses of a path such as `table.insert` after a file-level alias of it (`local insert = table.insert`; a path starting with a global, alias never reassigned) where the alias is not shadowed and the path's first name is still the global. Uses that are assigned to, chains not starting at the global (`x.table.insert`) and paths assigned anywhere in the file are exempt. The fix replaces the path with the alias. | convention | yes | |
-| `Style/Semicolon` | No semicolons (a `;` between table fields becomes a comma; a `;` between statements of a function inside a table stays a statement separator and is removed). With `EnforcedStyle: require` (Clockwork), every statement ending a line ends with `;`, including the `end` of blocks and functions (`end;`, `end);`), while lines ending in `then`, `do`, `else` or a function header take none; stray semicolons (`then;`, `;;`) are removed. | convention | yes | `EnforcedStyle: omit` (or `require`) |
+| `Style/Semicolon` | No semicolons, empty statements (`;;`) included (a `;` between table fields becomes a comma; a `;` between statements of a function inside a table stays a statement separator and is removed). With `EnforcedStyle: require` (Clockwork), every statement ending a line ends with `;`, including the `end` of blocks and functions (`end;`, `end);`), while lines ending in `then`, `do`, `else` or a function header take none; stray semicolons (`then;`, `;;`) are removed. | convention | yes | `EnforcedStyle: omit` (or `require`) |
+| `Style/ShortFunction` | Anonymous functions whose body is a single `return` of one expression on one line, without `...` among their parameters, written as a short function: `\|a, b\| -> a + b`, `a -> a`, `\|\| -> 1`; left alone where the expression would read differently or the line would exceed the `Max` of `Layout/LineLength` (when enabled); see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/StringLiterals` | Single quotes, unless the string contains a single quote; long strings exempt. | convention | yes | `EnforcedStyle: single_quotes` (or `double_quotes`) |
+| `Style/TernaryOperator` | `c and a or b` written as the ternary `c ? a : b` when `a` is a literal that cannot be `false` or `nil` (a number, a string, a table constructor or `true`) and the `or` is a whole value (of a `local`, an assignment, a `return`, a table field, a call argument or parentheses); see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/TrailingCommaInTable` | No comma after the last item of a table. | convention | yes | `EnforcedStyle: no_comma` (or `comma`: required in multi-line tables) |
 
 ### Lint
@@ -218,6 +225,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/DuplicateRegistration` | The same literal network string (`util.AddNetworkString`), network receiver (`net.Receive`), console command (`concommand.Add`) or console variable (`CreateConVar`, `CreateClientConVar`) registered again, case-insensitively, after a registration in the same or an enclosing block (the `SERVER` and `CLIENT` branches of an `if` do not conflict). Files that do not parse are skipped. | warning | no | |
 | `Lint/DuplicateRequire` | A call of a function in `Functions` with a string literal already passed to an earlier such call in the same or an enclosing block; calls whose result is indexed right away (`require('x').y`) are exempt. Files that do not parse are skipped. | warning | no | `Functions: [require]` |
 | `Lint/DuplicateTableKey` | The same literal key twice in one table constructor (`a = 1, a = 2`, `['a']`, `[1]`/`[1.0]`). | warning | no | |
+| `Lint/ExtendedSyntax` | Every use of a syntax extension of LuaJIT 3.0, which the LuaJIT of stock Garry's Mod rejects: bit operators, `c ? a : b`, `?.`, `??`, compound assignment, `const`, short functions, `_` in numbers and empty statements (a `;` that ends no statement). The fix writes the plain Lua that does the same where there is one; `?.` and `??` have none. See [LuaJIT 3.0 syntax](#luajit-30-syntax). Disabled by default; enable it for code that must run on stock Garry's Mod. Files that do not parse are skipped. | error | yes | |
 | `Lint/FormatArgumentCount` | A call of a function in `Functions` (`string.format(fmt, ...)`, `Format(fmt, ...)`) or the method form on a string literal (`('%d'):format(n)`) whose literal format takes more arguments than given (a "bad argument" error at run time) or fewer (the extra ones are ignored). Every `%[-+ #0]*[0-9]*(.[0-9]*)?[cdiouxXeEfgGqsaA]` conversion takes one argument and `%%` none; formats with any other `%` sequence or a numeric escape are skipped. When the last argument is a call or `...`, only the arguments before it count and only too many are flagged. Files that do not parse are skipped. | warning | no | `Functions: [string.format, Format]` |
 | `Lint/GlobalAssignment` | Assignments to a plain name that resolves to no local (`count = 0`) and `function name()` statements with a single-name path, inside a function body: almost always a missing `local`. Exempt are file-level writes (unless `AllowFileLevel` is `false`) and in-function writes of a name also assigned at file level in the same file, names in `AllowedGlobals`, names without lowercase letters (`CW_CONVAR_LOG`) with `AllowUppercase`, and globals the function reads before or in the statement of its first write there (`local old = can`, `if !sfs then sfs = ... end`, `n = n + 1`). Each global is reported once per function (the innermost one), at its first write. Files that do not parse are skipped. | warning | no | `AllowFileLevel: true`, `AllowUppercase: true`, `AllowedGlobals: [GM, GAMEMODE, ENT, SWEP, EFFECT, TOOL, PANEL, PLUGIN, SCHEMA, Schema, ITEM, FACTION, CLASS, ATTRIBUTE, LANGUAGE, CHAT_CLASS, PACKAGE, CMD, ROLE, THEME, SKILL, PLAYER]` |
 | `Lint/NonLiteralAssertMessage` | `assert(condition, message)` whose message is not a literal, a name, a field or an index, so it is built even when the assertion passes. Disabled by default. | warning | no | |
@@ -226,7 +234,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/RemoveInForwardLoop` | `table.remove(t, i)` inside a loop walking `t` forward with the index `i`, which skips the element after each removed one: numeric `for i = start, limit do` loops without a step or with a positive numeric literal step whose limit mentions `#t` (`for i = 1, #t do`), and `for i, v in ipairs(t) do` and `for k, v in pairs(t) do` loops. The removal must name the walked table (the same name or field chain of the same variable) and pass exactly the loop variable (a local shadowing it does not count); removals inside functions defined in the loop are ignored, and so is a removal followed in its block, or an enclosing block inside the loop, by `return`, `goto` or a `break` leaving the walked loop. Files that do not parse are skipped. | warning | no | |
 | `Lint/SelfAssignment` | Assignments of a name, field or index to itself (`x = x`, `a.b = a.b`, `a[k] = a[k]`, `t['x'] = t.x`), including one target of a multiple assignment whose value in the same position is itself (`a, b = a, c` flags `a`; the swap `a, b = b, a` is fine). Field and index chains must start at a name and contain no calls, with literal or plain-name keys; `local x = x` (caching a global or upvalue) is not flagged. Files that do not parse are skipped. | warning | no | |
 | `Lint/ShadowedLibrary` | Locals, parameters and loop variables named after a GMod library (`local file = ...`); `local render = render` is allowed. | warning | no | `Libraries: [player, team, file, table, sound, string, math, util, net, hook, timer, render, surface, draw, ents, game, engine, input, gui, vgui, http, os, debug, bit]` |
-| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. When none of those is found, the file is parsed and the first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``): code after a `return` in the same block, an expression standing as a statement, assigning to a call, a missing `=` or `,`, and so on. | fatal | no | |
+| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. When none of those is found, the file is parsed and the first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``): code after a `return` in the same block, an expression standing as a statement, assigning to a call, a missing `=` or `,`, and so on. The syntax extensions of LuaJIT 3.0 are valid syntax (see `Lint/ExtendedSyntax`). | fatal | no | |
 | `Lint/UnbalancedAssignment` | Assignments with more targets than values (`local a, b = 1`: `b` is `nil`), unless the last value is a call, `...` or `nil`, and values beyond the number of targets (`local a = 1, 2`), which are discarded. | warning | no | |
 | `Lint/UncheckedEntityInCallback` | Method calls (`e:Method(...)`) on a captured entity inside a deferred callback, a function literal passed to one of the `Functions` (the number is the 1-based position of the callback argument; closures nested in it count), when the callback does not check `IsValid(e)` or `e:IsValid()` anywhere before the call (by source position): the entity may have been removed by then ("Tried to use a NULL entity!"). `e` is a local, parameter or loop variable declared outside the callback that holds an entity: `self` in a method or function field of one of the `EntityTables` (`function ENT:Think()`, `ENT.Use = function(self)`), a variable named one of the `EntityNames`, or a local initialized from a call of one of the `EntityFunctions`; a local initialized from one of the `AlwaysValidFunctions` never counts. Field accesses and arguments are not checked; each variable is reported once per callback, at its first unchecked call. Files that do not parse are skipped. | warning | no | `Functions: { timer.Simple: 2, timer.Create: 4 }`, `EntityTables: [ENT, SWEP, EFFECT, PANEL, TOOL]`, `EntityNames: [ply, player, pl, client, ent, entity, target, victim, attacker, inflictor, owner, weapon, wep, npc, vehicle, ragdoll, prop, panel]`, `EntityFunctions: [ents.Create, ents.CreateClientProp, Entity, player.GetBySteamID, player.GetBySteamID64, vgui.Create]`, `AlwaysValidFunctions: [LocalPlayer]` |
 | `Lint/UndefinedDocParam` | Parameter tags in a function's doc comment (`@param name`, `@param name=default`, `---@param name?`, `@tparam type name`, `TypedParamTags` aliases such as `@string name`) that name no parameter of the function; methods have an implicit `self`, `...` matches a vararg. The doc comment is the `--` comment lines directly above the line of the `function` keyword, when it is the first function on its line. Files that do not parse are skipped. | warning | no | `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
@@ -256,7 +264,7 @@ defined in the file counts); functions nested in a hot path are part of it.
 | `Performance/TypeComparison` | `type(x) == 'number'` and `type(x) != 'number'` (either order, `~=` too) when `Predicates` maps the type name to a predicate that tests it directly, without building and comparing a string. The fix writes `isnumber(x)` or `not isnumber(x)`. | warning | yes | `Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }` |
 | `Performance/TableInsertAppend` | `table.insert(t, v)` standing as a statement with exactly two arguments, which `t[#t + 1] = v` does without calling a function. Only tables that can be written twice are flagged: a name, or fields and indexes over a name whose keys are literals or names (`t`, `self.items`, `lists[id]`). Calls with a `...` value, and calls where `table` is a local, are left alone. The fix writes `t[#t + 1] = v`, unless a comment lies inside the call or the value calls a function and mentions the table's root name (`table.insert(t, build(t))`, where the call could grow the table before `#t` is taken). A call as the value is assumed to return one value; unlike `table.insert`, the assignment goes through a `__newindex` metamethod. Files that do not parse are skipped. Disabled by default: `table.insert` is the default style. | warning | yes | |
 | `Performance/PowerOfTwo` | Squaring with `^ 2` (`x ^ 2`, `self.radius ^ 2.0`), which calls `pow` where multiplying the value by itself is cheaper: the fix writes `x * x`. Only bases that can be written twice are flagged: a name, or fields and indexes over a name whose keys are literals or names. The product is parenthesized where it would otherwise bind looser than `^`: as the operand of a unary operator (`-x ^ 2` to `-(x * x)`) and as the right operand of `*`, `/`, `%` and `^` (`a / b ^ 2` to `a / (b * b)`). No fix when a comment lies inside the expression. LuaJIT already compiles `x ^ 2` as a multiplication in traces, so this saves time where code runs in the interpreter. A value whose metatable has `__pow` but not `__mul` breaks under the fix. Files that do not parse are skipped. | warning | yes | |
-| `Performance/ConcatInLoop` | Strings built with `..` in a loop: an assignment `s = s .. x` (the target is the leftmost operand of the concatenation) or `s = x .. s` (the rightmost) in the body of a `for`, `while` or `repeat` loop, where `s` is a name or a field chain over a name (`self.text`) declared outside the loop. Each such assignment copies the whole string built so far; collecting the parts in a table and calling `table.concat` copies them once. Targets declared inside the loop (locals of its body, loop variables, fields of them) and loops in a function defined outside them are left alone. Each target is reported once per loop, at its first assignment, in the outermost loop of its function that it outlives. Files that do not parse are skipped. | warning | no | |
+| `Performance/ConcatInLoop` | Strings built with `..` in a loop: an assignment `s = s .. x` (the target is the leftmost operand of the concatenation), `s = x .. s` (the rightmost) or `s ..= x` in the body of a `for`, `while` or `repeat` loop, where `s` is a name or a field chain over a name (`self.text`) declared outside the loop. Each such assignment copies the whole string built so far; collecting the parts in a table and calling `table.concat` copies them once. Targets declared inside the loop (locals of its body, loop variables, fields of them) and loops in a function defined outside them are left alone. Each target is reported once per loop, at its first assignment, in the outermost loop of its function that it outlives. Files that do not parse are skipped. | warning | no | |
 | `Performance/GlobalLookupInHotPath` | Library members looked up through their global (`surface.SetDrawColor`, `math.sin`) at least `MinUses` times in one hot path (with the functions nested in it). Each lookup indexes the global table and then the library on every frame or tick; a file-level `local SetDrawColor = surface.SetDrawColor` does it once (and `Style/PreferredLocalAlias` then keeps the code using it). Only the `Libraries` count, and only where the library name is the global rather than a local; assignments to a member are not lookups. Each path is reported once per hot path, at its first lookup. Disabled by default. Files that do not parse are skipped. | warning | no | `Libraries: [math, surface, draw, render, cam, string, table, util, input, gui]`, `MinUses: 2` |
 | `Performance/ExpensiveCallInHotPath` | Calls of expensive functions inside a hot path. The expensive functions are `UnsafeFunctions` plus `ExtraUnsafeFunctions` and the keys of `Alternatives`, minus `SafeFunctions`; a call of a function with an `Alternatives` entry recommends that alternative (`Alternatives: { Material: util.get_material }`), any other suggests moving the call out of the hot path. Files that do not parse are skipped. | warning | no | `UnsafeFunctions: [player.GetAll, ents.GetAll, file.Append, file.CreateDir, file.Delete, file.Exists, file.Find, file.IsDir, file.Open, file.Read, file.Rename, file.Size, file.Time, file.Write, CompileString, RunString, RunStringEx, table.HasValue, surface.CreateFont, surface.GetTextureID, Material, vgui.Create]`, `ExtraUnsafeFunctions: []`, `SafeFunctions: []`, `Alternatives: {}` |
 
@@ -340,6 +348,86 @@ How the readers treat markup:
   `Flux` for `<Flux.Panels.Card/>`. Only tags starting with an upper case letter are components; `<view>`
   names no variable.
 
+## LuaJIT 3.0 syntax
+
+Besides plain Lua and the GLua extensions, the lexer and the parser read the syntax extensions that
+LuaJIT backports from LuaJIT 3.0, in Lua files and in the Lua of Lumen templates alike:
+
+| Syntax | Reads as |
+|--------|----------|
+| `a & b`, `a \| b`, `a ~ b`, `a << n`, `a >> n`, `a ~>> n`, `~a` | Bit operators. They bind looser than `..` and arithmetic and tighter than comparisons, `\|` loosest, then `~`, `&` and the shifts (`5 & 3 == 1` is `(5 & 3) == 1`). |
+| `c ? a : b` | A ternary, testing `c` for `false` or `nil`. It binds looser than every operator (`'x' .. (c ? a : b)` needs the parentheses) and associates to the right. In `a`, a `:` ends the branch rather than call a method (`c ? (o:m()) : b`); in `b`, a `:` after a name, `)`, `]` or call arguments calls a method. |
+| `a?.b`, `a?.[k]`, `a?.(args)`, `a?.:m()`, `a:m?.()` | Safe navigation: when the value before `?.` is `nil`, the rest of the chain is skipped and gives `nil` (a single assignment target such as `a?.b = v` is skipped too). |
+| `a ?? b` | `b` only when `a` is `nil`, with the priority of `or`. |
+| `x += e`, `-=`, `*=`, `/=`, `%=`, `..=`, `&=`, `\|=`, `<<=`, `>>=`, `~>>=`, `x ~= e` | Compound assignment of one name, field or index (no space before the `=`). A `~=` after the target of an assignment statement is the xor assignment; anywhere else it is "not equal". There is no `^=`. |
+| `const x = e`, `const a, b = ...`, `const function f()` | Locals that cannot be assigned again. `const` is a keyword where a `local` could stand and a name everywhere else. |
+| `x -> e`, `\|a, b\| -> e`, `\|\| -> e`, `\|a\| -> do ... end` | Short functions. The expression form takes exactly one expression (`f(\|a\| -> a + 1, 2)` passes two arguments) and returns all of its values. |
+| `1_000`, `0x_FF` | Numbers with `_` separators. |
+| `;;` | Empty statements, anywhere. |
+
+The readers treat the new constructs like the ones they stand for: a short function is a function
+(a callback for `Lint/UncheckedEntityInCallback`, a hot path when registered for one, a handler for
+the `Security` readers, and, assigned to a name, a documented function for the documentation readers
+like `name = function`), its parameters are parameters and `const` declares locals (for the naming
+readers, `Lint/UnusedVariable` and `Lint/RedefinedLocal`); a compound assignment reads and writes its
+target (`Lint/GlobalAssignment`, `Performance/ConcatInLoop`); the spacing readers put one space
+around the bit, compound and ternary operators, `??` and `->`, none inside `?.`, and treat `|a, b|`
+like a parameter list; the block structure indents the `do ... end` body of a short function like
+a function body. `Lint/Syntax` accepts all of it.
+
+### Readers that write the extensions
+
+Five readers move code to the extensions where that keeps what it does. They are disabled by default,
+as only a LuaJIT with the extensions runs the result; the Flux style enables them. Every fix keeps
+the text of the operands, and `tests/extended_syntax.rs` checks the rewrites by running a corpus of
+tricky cases with such a LuaJIT before and after them.
+
+- `Style/CompoundAssignment` rewrites `x = x op e` to `x op= e` when the statement has one target
+  and one value, the value is an operation of `op` whose left operand is written exactly like the
+  target (`x = x - a - b` subtracts `x - a` first and is left alone), and the target is a name, a
+  field of a name or an index of a name by a name or a literal, which reads the same whether it is
+  evaluated once or twice. `op` is one of `+ - * / % ..`, `&`, `|`, `<<`, `>>` and `~>>`: `^` has no
+  compound form and the xor `~=` reads as "not equal". Parentheses around the whole right operand
+  are dropped when the statement parses the same without them; the spaces before the `=` stay, so
+  aligned groups stay aligned.
+- `Style/BitOperators` rewrites calls of the global `bit` library (not where a local named `bit` is
+  in scope) with at least two arguments (exactly two for the shifts, one for `bnot`). The result is
+  parenthesized wherever it is an operand or is indexed or called (`~a` only as the operand of a
+  unary operator or the base of `^`), and so is every argument that is a binary operation or a
+  ternary. A call whose last argument is a call (other than of `bit`) or `...`, which the library
+  receives with all its values but an operator with only the first, a call with a string literal
+  argument and a call standing as a statement are reported without a fix. The library turns numeric strings into numbers where the
+  operators raise an error, so code that only works on strings from elsewhere breaks under the fix.
+- `Style/TernaryOperator` rewrites `c and a or b` to `c ? a : b` only when `a` is a number, a string,
+  a table constructor or `true`, which can never be `false` or `nil` (otherwise `c and a or b` gives
+  `b` when `c` holds), and the `or` is the whole value of a `local`, an assignment, a `return`, a
+  table field, a call argument or parentheses, never an operand or a condition, and not in the
+  first branch of another ternary, whose `:` it would take. Only `and` and `or` are replaced, so the
+  line breaks between the parts stay.
+- `Style/ShortFunction` rewrites an anonymous `function(params) return e end` whose body is that one
+  `return` of one expression written on one line, with no `...` among the parameters, to `p -> e`,
+  `|| -> e` or `|a, b| -> e`. A short function returns every value of its expression, as `return`
+  does. It is left alone where the expression would read differently: as an operand, a condition or
+  before a `(` that would call it, in the first branch of a ternary when the expression calls a
+  method, and before the `:` of a ternary that the expression would take; and when the line would
+  grow past the `Max` of `Layout/LineLength` (when enabled).
+- `Style/NumericSeparators` writes decimal integers of `MinDigits` digits or more with `_` every
+  three digits from the right, and regroups literals whose separators are not in threes.
+
+### Plain Lua for stock Garry's Mod
+
+`Lint/ExtendedSyntax` (disabled by default, severity `error`) reports every use of an extension for
+code that must run on the LuaJIT of stock Garry's Mod, which rejects them; the GLua extensions and
+`\u{XXXX}` escapes are not reported. Its fix writes plain Lua that does the same where there is
+one: `const` becomes `local`; number separators are dropped; `x op= v` becomes `x = x op v` (`v`
+in parentheses where it would bind differently) for the same targets `Style/CompoundAssignment`
+writes; a bit operation becomes a call of the global `bit` library (`a & b & c` to
+`bit.band(a, b, c)`, `~a` to `bit.bnot(a)`); `c ? a : b` becomes `c and a or b` when `a` is a
+literal that cannot be `false` or `nil`; a short function becomes a `function`; an empty statement
+is removed. `?.`, `??`, the other ternaries and compound assignments, and rewrites that would end
+with a `)` before a `(` (which would call it) are reported without a fix.
+The fixes of the five readers above and these undo each other.
+
 ## Flux conventions
 
 The defaults encode the style of the Flux framework:
@@ -362,6 +450,9 @@ The defaults encode the style of the Flux framework:
   function definitions; no blank line right after an opener or right before `end`; never two
   blank lines in a row.
 - No parentheses around conditions, no trailing commas in tables, no semicolons.
+- The syntax extensions of LuaJIT 3.0 where they say the same in fewer words (not enabled by default,
+  enabled in [`examples/flux`](examples/flux)): `x += 1`, `a & b`, `c ? 'a' : 'b'`,
+  `|a, b| -> a < b` and `1_000_000`.
 - Never name a variable after a GMod library (`player`, `file`, `table`, ...): use `actor`,
   `target`, `client`, `path`, `tbl` and the like.
 - Nothing expensive in a function that runs every frame or tick (`Think`, `HUDPaint`,
@@ -393,13 +484,14 @@ Readers share a few helper modules, which are ordinary modules of their departme
 | `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
 | `readers::naming::case` | `Case`, which classifies a name (one lowercase word, snake_case, lowerCamelCase, PascalCase, SCREAMING_SNAKE_CASE), the `NamingStyle` of the naming readers' `EnforcedStyle`, and `is_lower_camel_case`. |
 | `readers::lint::nesting` | A bracket and block-keyword tracker used by `Lint/Syntax` and `Lint/DuplicateTableKey`. |
-| `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions and Lumen markup, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
+| `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions, the syntax extensions of LuaJIT 3.0 (short functions are `Function`s with a `FunctionForm`) and Lumen markup, `binary_precedence`, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
 | `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
 | `readers::security::realm` | `is_client_file`, `client_ranges` (the code `if CLIENT then`, the `else` of `if SERVER then` and guards such as `if SERVER then return end` keep on the client) and `server_handlers(block, source, registrar)`: the functions a call such as `net.Receive` or `concommand.Add` registers where they may run on the server, as literals or functions of the file passed by name. Used by the `Security` readers. |
 | `readers::performance::hot_paths` | `hot_calls(block, source, hot_paths, hook_functions)` and `configured_hot_calls(ctx, block)` (under the `HotPaths` and `HookFunctions` options of the `Performance` section, whose defaults it declares): every call of a plain function inside a hot path of a parsed file, with the name of the hot path it is in; plus `is_constant`. Used by the hot-path readers. |
 | `readers::style::doc_comments` | The doc comment of every function of a parsed file (the `--` comment lines directly above its `function` keyword's line), its tags (`-- @param`, `---@param`) and documented parameter names with byte ranges, plus `comment_line`. Used by the documentation readers and `Lint/UnusedVariable`. |
 | `readers::style::quotes` | Converting string literals between single and double quotes. |
+| `readers::style::rewriting` | `placements(block)`: what every expression of a parsed file is to the construct around it (a value, an argument, an operand of which operator, a condition, a ternary branch, ...) and whether LuaJIT reads method calls there; `shape` and `statement_value_shape` for checking how a rewrite parses; `is_simple_target`, `never_false` and `has_top_level_method_call`. Used by the readers that write the syntax extensions of LuaJIT 3.0 and `Lint/ExtendedSyntax`. |
 
 ## Adding a reader
 
@@ -473,10 +565,15 @@ mod tests {
   `ctx.option_str_map("Alternatives")` and friends. Options shared by every reader of a department are
   declared once with `inventory::submit! { SharedOptions { department: "Performance", defaults: || ... } }`
   and read the same way: a reader sees its department's section under its own options.
+- `ctx.reader_config(name)` gives the effective configuration of another reader for the file (as
+  `Style/ShortFunction` reads the `Max` of `Layout/LineLength`).
 - `ctx.source` gives the text, the lines and every token (trivia included) with byte ranges and 1-based
   line/column positions, plus helpers such as `code_tokens`, `token_at`, `first_code_token_on_line`,
   `lines_inside_multiline_tokens`, `lines_inside_markup`, `opaque_lines` and `component_references`. In a
   Lumen template (`source.is_lumen()`) markup is `TokenKind::Markup`; see [Lumen templates](#lumen-templates).
+  The syntax extensions of LuaJIT 3.0 have token kinds of their own (`Ampersand`, `Pipe`, `Tilde`, `Shl`,
+  `Shr`, `Sar`, `Question`, `TernaryColon`, `SafeNav`, `Coalesce`, `Arrow`, `Bar`, `CompoundAssign`,
+  `Const`), so a reader matching `Colon` never sees the `:` of a ternary nor `Local` a `const`.
 - A fix is a list of `Edit`s (`replace`, `remove`, `insert`) over byte ranges of the current text. Fixes that
   overlap an already accepted fix are retried in the next pass, so keep each fix minimal.
 - Test with `crate::testing`: `inspect`, `inspect_with` (options as YAML, e.g. `"Max: 80"`), `inspect_configured`
@@ -500,7 +597,11 @@ cargo test -- --ignored                      # also run over the whole Flux corp
                                              # them and adds no offenses of other readers, that the readers
                                              # rewriting code (Style/PreferredLocalAlias and the Performance
                                              # comparison fixes) change only what they are for; also
-                                             # that correcting its Lumen templates keeps their markup
+                                             # that correcting its Lumen templates keeps their markup, and
+                                             # that the readers writing the LuaJIT 3.0 extensions and the
+                                             # fix of Lint/ExtendedSyntax undo each other; and runs the
+                                             # corpora of tests/extended with the LuaJIT at
+                                             # /home/luna/code/nl/LuaJIT, before and after those fixes
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -515,13 +616,14 @@ example plugin written in that style; copy a configuration to the root of a proj
 
 | Style | Configuration | What it looks like |
 |-------|---------------|--------------------|
-| Flux | [`examples/flux`](examples/flux) | The built-in default: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, `function(a)`, PascalCase classes and modules, snake_case everything else (no camelCase), doc comments, blank lines around blocks, `util.get_material` recommended over `Material` in hot paths. |
+| Flux | [`examples/flux`](examples/flux) | The built-in default plus the readers writing the LuaJIT 3.0 extensions: 2 spaces, `'single quotes'`, `!`, `!=`, `and`/`or`, `'a'..b`, `{ a = 1 }`, `function(a)`, `x += 1`, `\|a, b\| -> a < b`, PascalCase classes and modules, snake_case everything else (no camelCase), doc comments, blank lines around blocks, `util.get_material` recommended over `Material` in hot paths. |
 | Catwork | [`examples/catwork`](examples/catwork) | The Flux style with Clockwork naming: lowerCamelCase variables, PascalCase functions, no required doc comments. |
 | Clockwork | [`examples/clockwork`](examples/clockwork) | Tabs (4 columns), 120-character lines, PascalCase functions, lowerCamelCase variables, `{a, b, c}`, and `;` ending every statement that ends a line, `end;` included; otherwise the Flux style. |
 | Vanilla GMod | [`examples/gmod`](examples/gmod) | The Lua shipped with the game: tabs, `print( "x" )`, `function( a )`, `t[ k ]`, `if ( !IsValid( ply ) ) then`, `"a" .. b`, lowerCamelCase variables, PascalCase functions, no line limit or blank-line rules. |
 | Helix | [`examples/helix`](examples/helix) | Helix schemas and plugins: tabs, `if (condition) then`, `func(a, b)`, `function(a)`, `{a = 1}`, `array[ other[index] ]`, `"a"..b`, `"double quotes"`, `and`/`or`, `!`, lowerCamelCase locals and local functions, UpperCamelCase functions, unused parameters allowed, no line limit or blank-line rules. |
 | C++ (Stroustrup) | [`examples/stroustrup`](examples/stroustrup) | 4 spaces, 80 columns, `//` and `/* */` comments, `&&`, `\|\|`, `!`, `!=`, `if (x > 0) then`, `"double quotes"`, `{1, 2}`, `f("x")`, snake_case. |
 
-`cargo test --test examples` checks that every example is clean under its own style and that
-autocorrecting the Flux example with each configuration produces that style's example
-(`PROOFREADER_BLESS=1` regenerates them).
+Every style but Flux enables `Lint/ExtendedSyntax`, whose fix turns the extensions of the Flux
+example back into plain Lua. `cargo test --test examples` checks that every example is clean under
+its own style and that autocorrecting the Flux example with each configuration produces that style's
+example (`PROOFREADER_BLESS=1` regenerates them).

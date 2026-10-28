@@ -101,6 +101,40 @@ fn corrections_never_touch_markup() {
     assert!(corrected.contains("  if !props then return <view/> end\n"));
 }
 
+/// A template using the syntax extensions of LuaJIT 3.0 in its Lua, its splices and its
+/// attribute expressions, with spacing problems in all of them.
+const EXTENDED: &str = r#"--- A list of items.
+-- @param props [Map items (List), title (String)]
+-- @return [Markup the list]
+return function(props)
+  const count = #props.items
+  return <view title={props.title??'none'} count={count>0?count:0}>
+    {Lumen.map(props.items, |item|-><Row key={item?.id} flags={item.flags&0xFF}/>)}
+    {props.footer ?.text}
+  </view>
+end
+"#;
+
+#[test]
+fn corrections_handle_the_extended_syntax_in_splices() {
+    let (corrected, left) = correct(EXTENDED);
+    assert_eq!(
+        markup(&corrected),
+        markup(EXTENDED),
+        "markup changed:\n{corrected}"
+    );
+    assert!(left.is_empty(), "offenses remain: {left:?}\n{corrected}");
+    assert!(
+        corrected.contains(
+            "  return <view title={props.title ?? 'none'} count={count > 0 ? count : 0}>\n"
+        )
+    );
+    assert!(corrected.contains(
+        "    {Lumen.map(props.items, |item| -> <Row key={item?.id} flags={item.flags & 0xFF}/>)}\n"
+    ));
+    assert!(corrected.contains("    {props.footer?.text}\n"));
+}
+
 #[test]
 fn a_clean_template_has_no_offenses() {
     let (corrected, _) = correct(MESSY);

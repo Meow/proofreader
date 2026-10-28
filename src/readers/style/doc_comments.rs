@@ -144,12 +144,21 @@ fn param_name(rest: &str, start: usize, skip: usize) -> Option<ParamTag<'_>> {
     })
 }
 
-/// The doc comment of the function whose `function` keyword is `keyword`: the comment-only
-/// `--` lines directly above its line, when it is the first `function` on that line.
+/// The doc comment of the function whose `function` keyword (or first token, for a short
+/// function) is `keyword`: the comment-only `--` lines directly above its line, when it is the
+/// first function on that line.
 pub fn doc_comment<'a>(source: &'a Source, keyword: &Token) -> Option<DocComment<'a>> {
-    let first_function = source
-        .code_tokens_on_line(keyword.line)
-        .find(|token| token.kind == TokenKind::Function);
+    let tokens: Vec<&Token> = source.code_tokens_on_line(keyword.line).collect();
+    let first_function = tokens.iter().enumerate().find_map(|(index, token)| {
+        let starts = match token.kind {
+            TokenKind::Function | TokenKind::Bar => true,
+            TokenKind::Name => tokens
+                .get(index + 1)
+                .is_some_and(|next| next.kind == TokenKind::Arrow),
+            _ => false,
+        };
+        starts.then_some(*token)
+    });
     if first_function != Some(keyword) {
         return None;
     }
@@ -371,6 +380,39 @@ mod tests {
                 (Some("e".to_owned()), false),
                 (Some("f.g".to_owned()), false),
                 (None, false)
+            ]
+        );
+    }
+
+    #[test]
+    fn names_short_functions_and_constants() {
+        let src = "--- Doubles.\n-- @param x [Number]\nlocal double = x -> x * 2\n\
+                   --- Sums.\n-- @param a [Number]\nf.sum = |a, b| -> a + b\n\
+                   const function g() end\nh(|| -> 1)\n";
+        let source = Source::new("t.lua", src);
+        let block = parse(&source).expect("parses");
+        let found: Vec<(Option<String>, bool, Vec<&str>)> = functions(&source, &block)
+            .into_iter()
+            .map(|function| {
+                let params = function
+                    .doc
+                    .map(|doc| {
+                        doc.params(&LDOC_TYPED_PARAM_TAGS)
+                            .iter()
+                            .map(|param| param.name)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (function.name, function.local, params)
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (Some("double".to_owned()), true, vec!["x"]),
+                (Some("f.sum".to_owned()), false, vec!["a"]),
+                (Some("g".to_owned()), true, vec![]),
+                (None, false, vec![])
             ]
         );
     }

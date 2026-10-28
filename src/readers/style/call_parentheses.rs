@@ -161,6 +161,15 @@ mod tests {
     }
 
     #[test]
+    fn looks_inside_the_extended_syntax() {
+        expect_correction(
+            READER,
+            "f(|x| -> g 'a', c ? h { 1 } : nil, a ?? i 'b')\n",
+            "f(|x| -> g('a'), c ? h({ 1 }) : nil, a ?? i('b'))\n",
+        );
+    }
+
+    #[test]
     fn accepts_parenthesized_calls() {
         expect_no_offenses(
             READER,

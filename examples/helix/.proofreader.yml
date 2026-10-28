@@ -16,6 +16,8 @@
 #   `:Escape`
 # - no line length limit, no doc comments required, no blank-line rules beyond "no two blank
 #   lines in a row"
+# - plain Lua for stock Garry's Mod: none of the syntax extensions of LuaJIT 3.0 (`x += 1`,
+#   `c ? a : b`, `|a| -> a`, ...), which the fix turns into plain Lua where it can
 
 Layout/IndentationStyle:
   EnforcedStyle: tabs
@@ -73,3 +75,6 @@ Security/SqlInjection:
 
 Naming/FieldName:
   Enabled: false                           # field names follow no single convention here
+
+Lint/ExtendedSyntax:
+  Enabled: true                            # the LuaJIT of stock Garry's Mod rejects them

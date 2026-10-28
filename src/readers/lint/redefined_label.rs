@@ -95,6 +95,10 @@ impl Checker<'_> {
                 self.expressions(targets);
                 self.expressions(values);
             }
+            StatementKind::CompoundAssignment { target, value, .. } => {
+                self.expression(target);
+                self.expression(value);
+            }
             StatementKind::Call(call) => self.expression(call),
             StatementKind::Do { body } => self.block(body),
             StatementKind::While { condition, body } => {
@@ -192,16 +196,21 @@ impl Checker<'_> {
             ExpressionKind::Markup(splices) => self.expressions(splices),
             ExpressionKind::Parenthesized(inner)
             | ExpressionKind::Field { object: inner, .. }
+            | ExpressionKind::SafeField { object: inner, .. }
             | ExpressionKind::Unary { operand: inner, .. } => self.expression(inner),
-            ExpressionKind::Index { object, key } => {
+            ExpressionKind::Index { object, key } | ExpressionKind::SafeIndex { object, key } => {
                 self.expression(object);
                 self.expression(key);
             }
-            ExpressionKind::Call { callee, arguments } => {
+            ExpressionKind::Call { callee, arguments }
+            | ExpressionKind::SafeCall { callee, arguments } => {
                 self.expression(callee);
                 self.expressions(&arguments.values);
             }
             ExpressionKind::MethodCall {
+                object, arguments, ..
+            }
+            | ExpressionKind::SafeMethodCall {
                 object, arguments, ..
             } => {
                 self.expression(object);
@@ -210,6 +219,16 @@ impl Checker<'_> {
             ExpressionKind::Binary { left, right, .. } => {
                 self.expression(left);
                 self.expression(right);
+            }
+            ExpressionKind::Ternary {
+                condition,
+                consequent,
+                alternative,
+                ..
+            } => {
+                self.expression(condition);
+                self.expression(consequent);
+                self.expression(alternative);
             }
             ExpressionKind::Nil
             | ExpressionKind::True

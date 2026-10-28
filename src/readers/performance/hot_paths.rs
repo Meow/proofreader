@@ -427,6 +427,12 @@ pub fn is_constant(expression: &Expression) -> bool {
         ExpressionKind::Parenthesized(inner) => is_constant(inner),
         ExpressionKind::Unary { operand, .. } => is_constant(operand),
         ExpressionKind::Binary { left, right, .. } => is_constant(left) && is_constant(right),
+        ExpressionKind::Ternary {
+            condition,
+            consequent,
+            alternative,
+            ..
+        } => is_constant(condition) && is_constant(consequent) && is_constant(alternative),
         _ => false,
     }
 }

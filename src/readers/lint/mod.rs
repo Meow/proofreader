@@ -4,6 +4,7 @@ pub mod ast;
 pub mod duplicate_registration;
 pub mod duplicate_require;
 pub mod duplicate_table_key;
+pub mod extended_syntax;
 pub mod format_argument_count;
 pub mod global_assignment;
 pub mod libraries;

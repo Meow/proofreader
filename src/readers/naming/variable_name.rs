@@ -106,6 +106,14 @@ mod tests {
     }
 
     #[test]
+    fn checks_constants_and_short_function_parameters() {
+        expect_offense(READER, "const fooBar = 1\n", 1, 7, MESSAGE);
+        expect_offense(READER, "f(|a, someArg| -> a)\n", 1, 7, MESSAGE);
+        expect_offense(READER, "f(someArg -> 1)\n", 1, 3, MESSAGE);
+        expect_no_offenses(READER, "const MAX_PLAYERS = 1\nf(|a_b| -> a_b)\n");
+    }
+
+    #[test]
     fn accepts_other_styles() {
         expect_no_offenses(
             READER,

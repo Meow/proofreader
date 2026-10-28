@@ -172,6 +172,22 @@ mod tests {
     }
 
     #[test]
+    fn short_function_blocks_are_anonymous_functions() {
+        let src = "x()\ntimer.Simple(1, || -> do\n  y()\nend)\n";
+        expect_no_offenses(READER, src);
+        let offenses = inspect_with(READER, src, "IncludeAnonymousFunctions: true");
+        assert_eq!(offenses.len(), 1);
+        assert_eq!((offenses[0].line, offenses[0].col), (2, 23));
+        expect_offense(
+            READER,
+            "x()\nconst function f()\n  y()\nend\n",
+            2,
+            7,
+            "Add empty line before `function` block.",
+        );
+    }
+
+    #[test]
     fn accepts_blocks_opening_an_indented_group() {
         expect_no_offenses(
             READER,

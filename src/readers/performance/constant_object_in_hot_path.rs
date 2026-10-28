@@ -89,6 +89,24 @@ mod tests {
     }
 
     #[test]
+    fn short_functions_can_be_hot_paths() {
+        expect_offense(
+            READER,
+            "hook.Add('HUDPaint', 'x', || -> draw.Text(Color(0, 0, 1 << 4)))\n",
+            1,
+            43,
+            "`Color(0, 0, 1 << 4)` is built from constants every time `HUDPaint` runs; keep it in a local outside the hot path.",
+        );
+        expect_offense(
+            READER,
+            "PANEL.Paint = |panel, w, h| -> do\n  draw.Box(Color(1, 2, 3))\nend\n",
+            2,
+            12,
+            "`Color(1, 2, 3)` is built from constants every time `Paint` runs; keep it in a local outside the hot path.",
+        );
+    }
+
+    #[test]
     fn ignores_variable_arguments_and_other_contexts() {
         expect_no_offenses(
             READER,

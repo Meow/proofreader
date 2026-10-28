@@ -190,6 +190,15 @@ fn continues_expression(kind: TokenKind) -> bool {
             | TokenKind::LParen
             | TokenKind::LBrace
             | TokenKind::String { .. }
+            | TokenKind::Ampersand
+            | TokenKind::Pipe
+            | TokenKind::Tilde
+            | TokenKind::Shl
+            | TokenKind::Shr
+            | TokenKind::Sar
+            | TokenKind::Coalesce
+            | TokenKind::Question
+            | TokenKind::SafeNav
     )
 }
 
@@ -269,6 +278,24 @@ mod tests {
         );
         expect_no_offenses(READER, "f(x)\nlocal t = (a)\nif x then y = (z) end\n");
         expect_no_offenses(READER, "if () then end\nif (x\n");
+    }
+
+    #[test]
+    fn handles_the_extended_syntax() {
+        expect_no_offenses(
+            READER,
+            "repeat until (a) ?? b\nrepeat until (a) & 1\nrepeat until (a)?.b\n\
+             repeat until (a) ? b : c\nif (a & b) != 0 then end\n",
+        );
+        expect_correction(
+            READER,
+            "if (c ? a : b) then end\nwhile (x ?? y) do end\nrepeat until (a | b)\n",
+            "if c ? a : b then end\nwhile x ?? y do end\nrepeat until a | b\n",
+        );
+        assert_eq!(
+            autocorrect_with(READER, "if c ? a : b then end\n", REQUIRE),
+            "if (c ? a : b) then end\n"
+        );
     }
 
     #[test]

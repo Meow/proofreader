@@ -10,7 +10,9 @@ use crate::source::Source;
 use crate::token::{Token, TokenKind};
 
 /// Checks that binary operators and `=` have exactly one space on each side, and that `..` has
-/// none (or one, with `ConcatStyle: space`).
+/// none (or one, with `ConcatStyle: space`). The compound assignment operators (`+=`), the bit
+/// operators, `??`, the `?` and `:` of a ternary and the `->` of a short function are binary
+/// operators here; `?.` takes no space on either side, like `.`.
 ///
 /// Only sides where the neighbouring token is on the same line and is not a comment are checked.
 /// With `AllowForAlignment`, extra spaces before an operator are accepted when the operator lines
@@ -40,15 +42,18 @@ impl Reader for SpaceAroundOperators {
         let concat_spaced = ctx.option_str("ConcatStyle", "no_space") == "space";
         let allow_alignment = ctx.option_bool("AllowForAlignment", true);
         for code_index in 0..source.code_token_indexes().len() {
-            if !is_binary_operator(source, code_index) {
-                continue;
-            }
             let Some(operator) = source.code_token(code_index) else {
                 continue;
             };
+            let navigation = operator.kind == TokenKind::SafeNav;
+            if !navigation && !is_binary_operator(source, code_index) {
+                continue;
+            }
             let left = gap_before(source, code_index).filter(|gap| !gap.before.kind.is_comment());
             let right = gap_after(source, code_index).filter(|gap| !gap.after.kind.is_comment());
-            let finding = if operator.kind == TokenKind::Concat && !concat_spaced {
+            let finding = if navigation {
+                tight(source, operator, left, right)
+            } else if operator.kind == TokenKind::Concat && !concat_spaced {
                 unspaced(source, operator, left, right)
             } else {
                 spaced(source, operator, left, right, allow_alignment)
@@ -92,6 +97,26 @@ fn spaced(
         format!("Operator `{text}` should be surrounded by a single space.")
     };
     Some((message, edits))
+}
+
+/// The message and fix for a `?.` with spaces around it, if it has some.
+fn tight(
+    source: &Source,
+    operator: &Token,
+    left: Option<Gap>,
+    right: Option<Gap>,
+) -> Option<(String, Vec<Edit>)> {
+    let edits: Vec<Edit> = [left, right]
+        .into_iter()
+        .flatten()
+        .filter(|gap| !gap.is_empty())
+        .map(|gap| Edit::remove(gap.range()))
+        .collect();
+    if edits.is_empty() {
+        return None;
+    }
+    let text = source.text_of(operator);
+    Some((format!("Space around operator `{text}` detected."), edits))
 }
 
 /// The message and fix for a `..` that should have no spaces around it, if it has some.
@@ -332,6 +357,54 @@ mod tests {
         expect_correction(READER, "s = 'a' ..  b  ..'c'\n", "s = 'a'..b..'c'\n");
         expect_correction(READER, "a   = 1\nbcd =2\n", "a   = 1\nbcd = 2\n");
         expect_correction(READER, "if x==-1 then end\n", "if x == -1 then end\n");
+    }
+
+    #[test]
+    fn spaces_the_extended_operators() {
+        expect_correction(
+            READER,
+            "x=a&1|2~3<<4>>5~>>6\ny=a??b\nz=c?1:2\nf=|a,b|->a+b\ng=a->a\nh=||->1\n",
+            "x = a & 1 | 2 ~ 3 << 4 >> 5 ~>> 6\ny = a ?? b\nz = c ? 1 : 2\nf = |a,b| -> a + b\n\
+             g = a -> a\nh = || -> 1\n",
+        );
+        expect_correction(
+            READER,
+            "x+=1\nx-=1\nx..=s\nx<<=1\nx~>>=1\nx~=1\nt.x|=1\n",
+            "x += 1\nx -= 1\nx ..= s\nx <<= 1\nx ~>>= 1\nx ~= 1\nt.x |= 1\n",
+        );
+        expect_offenses(
+            READER,
+            "y = c ?o:m() or 1\n",
+            &[
+                (1, 7, "Surrounding space missing for operator `?`."),
+                (1, 9, "Surrounding space missing for operator `:`."),
+            ],
+        );
+        expect_no_offenses(
+            READER,
+            "y = ~x & -1\nz = c ? -1 : ~2\nf = |a| -> -a\nw = o:m() ? (o:n()) : o:p()\n\
+             local result = cond\n  ? 'a'\n  : 'b'\n",
+        );
+    }
+
+    #[test]
+    fn keeps_safe_navigation_tight() {
+        expect_offense(
+            READER,
+            "y = a ?. b\n",
+            1,
+            7,
+            "Space around operator `?.` detected.",
+        );
+        expect_correction(
+            READER,
+            "y = a ?.b?. [1] ?.(2) ?.:m()\n",
+            "y = a?.b?.[1]?.(2)?.:m()\n",
+        );
+        expect_no_offenses(
+            READER,
+            "y = a?.b?.[1]?.(2)?.:m() ?? o:m?.()\ny = a\n  ?.b\n",
+        );
     }
 
     #[test]

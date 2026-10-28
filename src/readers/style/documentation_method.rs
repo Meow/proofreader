@@ -99,6 +99,21 @@ mod tests {
     }
 
     #[test]
+    fn treats_constant_functions_as_local_functions() {
+        expect_no_offenses(READER, "const function helper() end\nlocal f = x -> x\n");
+        let offenses = inspect_with(
+            READER,
+            "const function helper() end\n",
+            "RequireForLocalFunctions: true",
+        );
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(
+            offenses[0].message,
+            "Missing documentation comment for `helper`."
+        );
+    }
+
+    #[test]
     fn rejects_separated_or_non_doc_comments() {
         let message = "Missing documentation comment for `foo`.";
         expect_offense(READER, "--- Doc.\n\nfunction foo() end\n", 3, 1, message);

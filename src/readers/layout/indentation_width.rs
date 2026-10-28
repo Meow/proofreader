@@ -173,6 +173,20 @@ mod tests {
     }
 
     #[test]
+    fn indents_short_function_blocks_like_function_bodies() {
+        expect_no_offenses(
+            READER,
+            "table.sort(t, |a, b| -> do\n  return a < b\nend)\nf(x -> x,\n  y)\n\
+             local v = c\n  ? 1\n  : 2\nconst function g()\n  return 1\nend\n",
+        );
+        expect_correction(
+            READER,
+            "timer.Simple(1, || -> do\nprint(1)\n    end)\n",
+            "timer.Simple(1, || -> do\n  print(1)\nend)\n",
+        );
+    }
+
+    #[test]
     fn flags_misaligned_closers() {
         expect_offense(
             READER,

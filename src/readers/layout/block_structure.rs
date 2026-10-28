@@ -16,7 +16,8 @@ use crate::token::{Token, TokenKind};
 /// What construct a block is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockKind {
-    /// `function ... end`, named or anonymous.
+    /// `function ... end`, named or anonymous, or the `do ... end` body of a short function
+    /// (`|a| -> do ... end`), which opens at its `do`.
     Function,
     /// The `if ... then` segment of an `if` statement.
     If,
@@ -168,6 +169,7 @@ fn can_start_statement(kind: TokenKind) -> bool {
         TokenKind::Name
             | TokenKind::LParen
             | TokenKind::Local
+            | TokenKind::Const
             | TokenKind::Function
             | TokenKind::If
             | TokenKind::For
@@ -209,6 +211,17 @@ fn continues_expression(kind: TokenKind) -> bool {
             | TokenKind::Assign
             | TokenKind::Then
             | TokenKind::In
+            | TokenKind::Ampersand
+            | TokenKind::Pipe
+            | TokenKind::Shl
+            | TokenKind::Shr
+            | TokenKind::Sar
+            | TokenKind::Coalesce
+            | TokenKind::Question
+            | TokenKind::TernaryColon
+            | TokenKind::SafeNav
+            | TokenKind::Arrow
+            | TokenKind::CompoundAssign
     )
 }
 
@@ -241,6 +254,19 @@ fn leaves_expression_open(kind: TokenKind) -> bool {
             | TokenKind::Dot
             | TokenKind::Colon
             | TokenKind::Local
+            | TokenKind::Const
+            | TokenKind::Ampersand
+            | TokenKind::Pipe
+            | TokenKind::Bar
+            | TokenKind::Shl
+            | TokenKind::Shr
+            | TokenKind::Sar
+            | TokenKind::Coalesce
+            | TokenKind::Question
+            | TokenKind::TernaryColon
+            | TokenKind::SafeNav
+            | TokenKind::Arrow
+            | TokenKind::CompoundAssign
             | TokenKind::Return
             | TokenKind::In
             | TokenKind::If
@@ -396,7 +422,12 @@ impl Builder<'_> {
                 }
             }
             TokenKind::Do => {
-                if let Some(&top) = self.stack.last()
+                let short_function = index
+                    .checked_sub(1)
+                    .is_some_and(|previous| self.tokens[previous].kind == TokenKind::Arrow);
+                if short_function {
+                    self.push(BlockKind::Function, index, true);
+                } else if let Some(&top) = self.stack.last()
                     && matches!(self.blocks[top].kind, BlockKind::For | BlockKind::While)
                     && self.blocks[top].body_start.is_none()
                 {
@@ -685,7 +716,7 @@ impl BlockStructure {
     }
 
     /// The function block of a definition on line `n`: `function name(`, `function a.b:c(` or
-    /// `local function name(` at the start of the line.
+    /// `local function name(` (or `const function name(`) at the start of the line.
     pub fn definition(&self, source: &Source, n: u32) -> Option<usize> {
         let first = self.first_token(n)?;
         if self.kind(n) != LineKind::Statement {
@@ -693,7 +724,7 @@ impl BlockStructure {
         }
         let keyword = match first.kind {
             TokenKind::Function => first,
-            TokenKind::Local => {
+            TokenKind::Local | TokenKind::Const => {
                 next_code_token(source, first).filter(|next| next.kind == TokenKind::Function)?
             }
             _ => return None,

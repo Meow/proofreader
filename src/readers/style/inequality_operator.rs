@@ -7,7 +7,9 @@ use crate::reader::{Context, Reader, Registration};
 use crate::token::TokenKind;
 
 /// Checks the spelling of the inequality operator: with `EnforcedStyle: bang` (the default) the
-/// Lua operator `~=` is flagged in favour of GLua's `!=`, with `tilde` the other way round.
+/// Lua operator `~=` is flagged in favor of GLua's `!=`, with `tilde` the other way round. A
+/// `~=` after the target of an assignment statement (`flags ~= mask`) is xor assignment, not the
+/// inequality operator, and is left alone.
 pub struct InequalityOperator;
 
 impl Reader for InequalityOperator {
@@ -67,6 +69,12 @@ mod tests {
     fn accepts_other_code() {
         expect_no_offenses(READER, "if a != b then end\n");
         expect_no_offenses(READER, "s = '~='\nt = { ['~='] = 1 }\n-- a ~= b\n");
+    }
+
+    #[test]
+    fn leaves_xor_assignment_alone() {
+        expect_no_offenses(READER, "flags ~= mask\nt.x ~= 1\n");
+        expect_offense(READER, "x ~= a ~= b\n", 1, 8, "Use `!=` instead of `~=`.");
     }
 
     #[test]
