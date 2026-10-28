@@ -66,8 +66,8 @@ const CLEANSING_FUNCTIONS: &[&str] = &[
 /// `tonumber`, `tobool`, `type`, `IsValid` and the `is*` predicates do not pass the data on.
 ///
 /// Handlers registered with one of the `PayloadReceivers` (`netstream.Hook`, Flux's and
-/// Catwork's `cable.receive`), which are called with the sending player followed by the
-/// message's values, are checked too, with every parameter after the first (and `...`) holding
+/// Catwork's `cable.receive`; methods are written `Clockwork.datastream:Hook`), which are
+/// called with the sending player followed by the message's values, are checked too, with every parameter after the first (and `...`) holding
 /// message data.
 ///
 /// The check stays inside the handler (the function literal passed to `net.Receive` or a
@@ -511,6 +511,29 @@ mod tests {
                     "Data from a net message reaches `game.ConsoleCommand`; a client can run console commands on the server.",
                 ),
             ],
+        );
+    }
+
+    #[test]
+    fn payload_receivers_can_be_methods() {
+        let src =
+            "Clockwork.datastream:Hook('a', function(player, data)\n  RunString(data)\nend)\n";
+        expect_no_offenses(READER, src);
+        let offenses = inspect_with(
+            READER,
+            src,
+            "PayloadReceivers: ['Clockwork.datastream:Hook']",
+        );
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(offenses[0].message, CODE);
+        assert_eq!((offenses[0].line, offenses[0].col), (2, 3));
+        assert!(
+            inspect_with(
+                READER,
+                src,
+                "PayloadReceivers: ['Clockwork.datastream.Hook']"
+            )
+            .is_empty()
         );
     }
 

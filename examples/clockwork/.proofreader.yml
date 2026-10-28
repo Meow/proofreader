@@ -5,7 +5,11 @@
 # - {a, b, c} without spaces inside braces
 # - every statement ending a line ends with `;`, including the `end` of blocks and functions
 #   (`end;`, `end);`); lines ending in `then`, `do`, `else` or a function header take none
-# - everything else as in the Flux style (see ../flux/.proofreader.yml)
+# - net messages through Clockwork.datastream:Hook as well as net.Receive
+# - SQL through the bundled MySQL wrapper: queries run with `:RawQuery`, values escaped with
+#   `:Escape`
+# - everything else as in the Flux style (see ../flux/.proofreader.yml), except that doc comments
+#   need not document every parameter and return value
 
 Layout/IndentationStyle:
   EnforcedStyle: tabs
@@ -32,6 +36,14 @@ Naming/VariableName:
 
 Style/Semicolon:
   EnforcedStyle: require
+
+Security/NetMessageExecution:
+  PayloadReceivers: ['Clockwork.datastream:Hook', 'netstream.Hook', 'cable.receive',
+                     'Cable.receive']
+
+Security/SqlInjection:
+  Methods: ['query', 'RawQuery']           # Clockwork.database:RawQuery
+  EscapeMethods: ['Escape', 'escape', 'quote', 'quote_name']
 
 Naming/FieldName:
   Enabled: false                           # field names follow no single convention here

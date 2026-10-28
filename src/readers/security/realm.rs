@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::readers::lint::ast::{
-    Block, Expression, ExpressionKind, Function, Statement, StatementKind, Visitor, walk,
+    Arguments, Block, Expression, ExpressionKind, Function, Statement, StatementKind, Visitor, walk,
 };
 use crate::source::Source;
 use crate::token::TokenKind;
@@ -161,12 +161,32 @@ pub struct Handler<'t> {
 impl Handler<'_> {
     /// The name the handler is registered under, when it is a string literal.
     pub fn name<'a>(&self, source: &'a Source) -> Option<&'a str> {
-        let (_, arguments) = self.call.as_call(source)?;
+        let (_, arguments) = registrar_call(self.call, source)?;
         arguments.values.first()?.string_contents(source)
     }
 }
 
-/// The handlers that calls of `registrar` (`net.Receive`, `concommand.Add`) in `block` register
+/// For a call of a plain function (`a.b(...)`) or a method (`a.b:c(...)`), the name it is
+/// registered under in options such as `PayloadReceivers` and its arguments.
+fn registrar_call<'t>(
+    expression: &'t Expression,
+    source: &Source,
+) -> Option<(String, &'t Arguments)> {
+    match &expression.kind {
+        ExpressionKind::MethodCall {
+            object,
+            name,
+            arguments,
+        } => Some((
+            format!("{}:{}", object.dotted_name(source)?, source.text_of(name)),
+            arguments,
+        )),
+        _ => expression.as_call(source),
+    }
+}
+
+/// The handlers that calls of `registrar` (`net.Receive`, `concommand.Add`, or a method such as
+/// `Clockwork.datastream:Hook`) in `block` register
 /// where they may run on the server, in source order, each function once.
 ///
 /// The handler is the second argument: a function literal, or the name of a function defined in
@@ -266,7 +286,7 @@ impl<'t> Visitor<'t> for HandlerFinder<'_, 't> {
     }
 
     fn expression(&mut self, expression: &'t Expression) {
-        let Some((function, arguments)) = expression.as_call(self.source) else {
+        let Some((function, arguments)) = registrar_call(expression, self.source) else {
             return;
         };
         if function == self.registrar

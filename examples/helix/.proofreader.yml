@@ -12,6 +12,8 @@
 #   SCREAMING_SNAKE_CASE enums (PLUGIN.MAX_VAR)
 # - no variables named after libraries: `client` rather than `player`, `tbl` rather than `table`,
 #   `text` or `str` rather than `string`
+# - SQL through the bundled MySQL wrapper: queries run with `:RawQuery`, values escaped with
+#   `:Escape`
 # - no line length limit, no doc comments required, no blank-line rules beyond "no two blank
 #   lines in a row"
 
@@ -64,6 +66,10 @@ Naming/MethodName:
 
 Lint/UnusedVariable:
   AllowUnusedParameters: true
+
+Security/SqlInjection:
+  Methods: ['query', 'RawQuery']           # mysql:RawQuery
+  EscapeMethods: ['Escape', 'escape', 'quote', 'quote_name']
 
 Naming/FieldName:
   Enabled: false                           # field names follow no single convention here

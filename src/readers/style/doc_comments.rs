@@ -177,6 +177,8 @@ pub struct DocumentedFunction<'t, 'a> {
     pub name: Option<String>,
     /// Whether it is a `function a:b()` method with an implicit `self`.
     pub method: bool,
+    /// Whether it is a local: `local function f()` or `local f = function()`.
+    pub local: bool,
     /// Its doc comment, if any.
     pub doc: Option<DocComment<'a>>,
 }
@@ -209,7 +211,7 @@ impl DocumentedFunction<'_, '_> {
 pub fn functions<'t, 'a>(source: &'a Source, block: &'t Block) -> Vec<DocumentedFunction<'t, 'a>> {
     struct Collector<'t, 'a> {
         source: &'a Source,
-        names: Vec<(usize, String, bool)>,
+        names: Vec<(usize, String, bool, bool)>,
         found: Vec<DocumentedFunction<'t, 'a>>,
     }
     impl<'t> Visitor<'t> for Collector<'t, '_> {
@@ -228,13 +230,14 @@ pub fn functions<'t, 'a>(source: &'a Source, block: &'t Block) -> Vec<Documented
                         full.push_str(source.text_of(method));
                     }
                     self.names
-                        .push((function.keyword.start, full, name.method.is_some()));
+                        .push((function.keyword.start, full, name.method.is_some(), false));
                 }
                 StatementKind::LocalFunction { name, function, .. } => {
                     self.names.push((
                         function.keyword.start,
                         source.text_of(name).to_owned(),
                         false,
+                        true,
                     ));
                 }
                 StatementKind::Local { names, values, .. } => {
@@ -244,6 +247,7 @@ pub fn functions<'t, 'a>(source: &'a Source, block: &'t Block) -> Vec<Documented
                                 function.keyword.start,
                                 source.text_of(name).to_owned(),
                                 false,
+                                true,
                             ));
                         }
                     }
@@ -255,7 +259,8 @@ pub fn functions<'t, 'a>(source: &'a Source, block: &'t Block) -> Vec<Documented
                         if let (ast::ExpressionKind::Function(function), Some(name)) =
                             (&value.kind, target.dotted_name(source))
                         {
-                            self.names.push((function.keyword.start, name, false));
+                            self.names
+                                .push((function.keyword.start, name, false, false));
                         }
                     }
                 }
@@ -264,18 +269,19 @@ pub fn functions<'t, 'a>(source: &'a Source, block: &'t Block) -> Vec<Documented
         }
 
         fn enter_function(&mut self, function: &'t Function) {
-            let (name, method) = self
+            let (name, method, local) = self
                 .names
                 .iter()
                 .rev()
-                .find(|(start, _, _)| *start == function.keyword.start)
-                .map_or((None, false), |(_, name, method)| {
-                    (Some(name.clone()), *method)
+                .find(|(start, ..)| *start == function.keyword.start)
+                .map_or((None, false, false), |(_, name, method, local)| {
+                    (Some(name.clone()), *method, *local)
                 });
             self.found.push(DocumentedFunction {
                 function,
                 name,
                 method,
+                local,
                 doc: doc_comment(self.source, &function.keyword),
             });
         }

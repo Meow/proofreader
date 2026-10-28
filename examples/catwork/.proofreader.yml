@@ -4,6 +4,9 @@
 #   around blocks, ...), see ../flux/.proofreader.yml
 # - lowerCamelCase locals and parameters, PascalCase functions and methods (cw.player:GetName())
 # - no doc comment required on every function
+# - the theme being built lives in the global `cwTHEME`
+# - SQL through the bundled MySQL wrapper: queries run with `:RawQuery`, values escaped with
+#   `:Escape`
 
 AllReaders:
   Exclude:
@@ -24,6 +27,16 @@ Lint/ShadowedLibrary:
   Libraries: ['table', 'string', 'math', 'util', 'net', 'hook', 'timer', 'render', 'surface',
               'draw', 'ents', 'game', 'engine', 'input', 'gui', 'vgui', 'http', 'os', 'debug',
               'bit']
+
+Lint/GlobalAssignment:
+  # `cwTHEME` holds the theme being built by cw.theme functions.
+  AllowedGlobals: ['cwTHEME', 'GM', 'GAMEMODE', 'ENT', 'SWEP', 'EFFECT', 'TOOL', 'PANEL', 'PLUGIN',
+                   'SCHEMA', 'Schema', 'ITEM', 'FACTION', 'CLASS', 'ATTRIBUTE', 'LANGUAGE',
+                   'CHAT_CLASS', 'PACKAGE', 'CMD', 'ROLE', 'THEME', 'SKILL', 'PLAYER']
+
+Security/SqlInjection:
+  Methods: ['query', 'RawQuery']           # cw.database:RawQuery
+  EscapeMethods: ['Escape', 'escape', 'quote', 'quote_name']
 
 Naming/FieldName:
   Enabled: false                           # field names follow no single convention here

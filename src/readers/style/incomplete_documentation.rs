@@ -13,8 +13,9 @@ use crate::token::Token;
 ///
 /// Parameter tags are those of `Lint/UndefinedDocParam` (`@param`, `@tparam` and the
 /// `TypedParamTags` aliases). Functions without tags in their doc comment, or without a doc
-/// comment, are left to `Style/DocumentationMethod`. Files that do not parse are skipped.
-/// Disabled by default.
+/// comment, are left to `Style/DocumentationMethod`. Local functions (`local function f()`,
+/// `local f = function()`) are skipped unless `RequireForLocalFunctions` is set. Files that do
+/// not parse are skipped. Disabled by default.
 pub struct IncompleteDocumentation;
 
 impl Reader for IncompleteDocumentation {
@@ -31,24 +32,31 @@ impl Reader for IncompleteDocumentation {
     }
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
-        vec![(
-            "TypedParamTags",
-            Yaml::Array(
-                LDOC_TYPED_PARAM_TAGS
-                    .iter()
-                    .map(|tag| Yaml::String((*tag).to_owned()))
-                    .collect(),
+        vec![
+            ("RequireForLocalFunctions", Yaml::Boolean(false)),
+            (
+                "TypedParamTags",
+                Yaml::Array(
+                    LDOC_TYPED_PARAM_TAGS
+                        .iter()
+                        .map(|tag| Yaml::String((*tag).to_owned()))
+                        .collect(),
+                ),
             ),
-        )]
+        ]
     }
 
     fn investigate(&self, ctx: &mut Context) {
+        let require_local = ctx.option_bool("RequireForLocalFunctions", false);
         let typed = ctx.option_str_list("TypedParamTags", &LDOC_TYPED_PARAM_TAGS);
         let source = ctx.source;
         let Ok(block) = parse(source) else {
             return;
         };
         for function in functions(source, &block) {
+            if function.local && !require_local {
+                continue;
+            }
             let Some(doc) = &function.doc else {
                 continue;
             };
@@ -124,9 +132,9 @@ mod tests {
         );
         expect_offense(
             READER,
-            "---@return number\nlocal f = function(a)\n  return 1\nend\n",
+            "---@return number\nf = function(a)\n  return 1\nend\n",
             2,
-            20,
+            14,
             "Missing `@param` for `a`.",
         );
     }
@@ -179,6 +187,21 @@ mod tests {
         let src = "-- @player client desc\n-- @treturn bool\nfunction f(client) return true end\n";
         assert_eq!(inspect(READER, src).len(), 1);
         assert!(inspect_with(READER, src, "TypedParamTags: [player]").is_empty());
+    }
+
+    #[test]
+    fn local_functions_are_optional() {
+        let src = "-- @param a\nlocal function f(a, b) end\n\
+                   -- @param a\nlocal g = function(a, b) end\n\
+                   -- @param a\nfunction h(a, b) end\n";
+        assert_eq!(
+            inspect_with(READER, src, "RequireForLocalFunctions: true").len(),
+            3
+        );
+        let offenses = inspect(READER, src);
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(offenses[0].message, "Missing `@param` for `b`.");
+        assert_eq!((offenses[0].line, offenses[0].col), (6, 15));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # Flux style: the style of the Flux framework, which is proofreader's built-in default.
 #
-# Every value below matches the default and could be left out; they are listed to show what
-# defines the style. See ../.proofreader.yml for every setting.
+# Every value below matches the default and could be left out, except those marked as not the
+# default; they are listed to show what defines the style. See ../.proofreader.yml for every
+# setting.
 #
 # - 2-space indentation, lines of at most 120 characters, LF line endings
 # - 'single quotes', `!`, `!=`, `and`/`or`, `--` comments, no semicolons
@@ -10,7 +11,9 @@
 # - PascalCase class and module names (class 'DateTime', mod 'Lumen::Compiler'), snake_case
 #   variables, functions and fields, no camelCase anywhere; PascalCase functions only where GMod
 #   or Lumen need them (hooks, GMod library overrides, Lumen components)
-# - a doc comment on every function
+# - a doc comment on every function, documenting every parameter and returned value (local
+#   functions may go without)
+# - players are called `actor`; deferred callbacks check `IsValid(actor)` like any entity
 # - blank lines around multi-line blocks, after guard clauses and between definitions
 # - Flux's cached util.get_material instead of Material in functions that run every frame
 
@@ -66,6 +69,9 @@ Style/TrailingCommaInTable:
 Style/DocumentationMethod:
   Enabled: true
 
+Style/IncompleteDocumentation:
+  Enabled: true                            # not the default
+
 Naming/VariableName:
   EnforcedStyle: snake_case
 
@@ -74,6 +80,12 @@ Naming/MethodName:
 
 Naming/FieldName:
   EnforcedStyle: snake_case
+
+Lint/UncheckedEntityInCallback:
+  # not the default: `actor` added to the names that hold an entity
+  EntityNames: ['actor', 'ply', 'player', 'pl', 'client', 'ent', 'entity', 'target', 'victim',
+                'attacker', 'inflictor', 'owner', 'weapon', 'wep', 'npc', 'vehicle', 'ragdoll',
+                'prop', 'panel']
 
 Naming/ClassName:
   Functions: ['class', 'mod', 'extends']

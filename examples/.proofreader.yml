@@ -550,6 +550,7 @@ Style/IncompleteDocumentation:
   Enabled: false
   Severity: convention
   AutoCorrect: true
+  RequireForLocalFunctions: false
   TypedParamTags: ['string', 'number', 'int', 'bool', 'tab', 'func', 'thread']
 
 # Checks that the inequality operator is spelled `!=` (or `~=`).
