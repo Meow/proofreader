@@ -6,55 +6,17 @@ use std::ops::Range;
 use yaml_rust2::Yaml;
 use yaml_rust2::yaml::Hash;
 
-use crate::reader::{Context, Reader, Registration, yaml_strings};
+use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::ast::{
-    Expression, ExpressionKind, Function, Statement, StatementKind, Visitor, parse, walk,
+    Expression, ExpressionKind, Function, Statement, Visitor, parse, walk,
 };
+use crate::readers::lint::entities::{Entities, entity_options};
 use crate::readers::lint::scopes::{Resolution, resolve};
-use crate::readers::naming::declarations::DeclarationKind;
 use crate::source::Source;
 use crate::token::Token;
 
 /// The functions running a callback later, with the 1-based position of the callback argument.
 const DEFAULT_FUNCTIONS: &[(&str, i64)] = &[("timer.Simple", 2), ("timer.Create", 4)];
-
-/// Tables whose methods' `self` is an entity or a panel.
-const DEFAULT_ENTITY_TABLES: &[&str] = &["ENT", "SWEP", "EFFECT", "PANEL", "TOOL"];
-
-/// Names of locals and parameters that hold an entity by convention.
-const DEFAULT_ENTITY_NAMES: &[&str] = &[
-    "ply",
-    "player",
-    "pl",
-    "client",
-    "ent",
-    "entity",
-    "target",
-    "victim",
-    "attacker",
-    "inflictor",
-    "owner",
-    "weapon",
-    "wep",
-    "npc",
-    "vehicle",
-    "ragdoll",
-    "prop",
-    "panel",
-];
-
-/// Functions returning an entity or a panel.
-const DEFAULT_ENTITY_FUNCTIONS: &[&str] = &[
-    "ents.Create",
-    "ents.CreateClientProp",
-    "Entity",
-    "player.GetBySteamID",
-    "player.GetBySteamID64",
-    "vgui.Create",
-];
-
-/// Functions returning an entity that stays valid, such as the local player.
-const DEFAULT_ALWAYS_VALID_FUNCTIONS: &[&str] = &["LocalPlayer"];
 
 /// Flags method calls on a captured entity inside a deferred callback that does not check the
 /// entity is still valid: by the time the callback runs the entity may have been removed (or the
@@ -63,12 +25,12 @@ const DEFAULT_ALWAYS_VALID_FUNCTIONS: &[&str] = &["LocalPlayer"];
 /// The callbacks are function literals passed to the functions in `Functions`, which maps each
 /// function to the 1-based position of its callback argument; closures nested in a callback are
 /// part of it. A call `e:Method(...)` is flagged when `e` is a local, parameter or loop variable
-/// declared outside the callback that holds an entity: `self` in a method of one of the
-/// `EntityTables` (`function ENT:Think()`, `function SWEP.Reload(self)`, `ENT.Use =
-/// function(self)`), a variable whose name is one of the `EntityNames`, or a local initialized
-/// from a call of one of the `EntityFunctions` (`local prop = ents.Create('prop_physics')`). A
-/// local initialized from a call of one of the `AlwaysValidFunctions` (`local client =
-/// LocalPlayer()`) is never flagged, whatever its name.
+/// declared outside the callback that holds an entity (see [`crate::readers::lint::entities`]):
+/// `self` in a method of one of the `EntityTables` (`function ENT:Think()`, `function
+/// SWEP.Reload(self)`, `ENT.Use = function(self)`), a variable whose name is one of the
+/// `EntityNames`, or a local initialized from a call of one of the `EntityFunctions` (`local prop
+/// = ents.Create('prop_physics')`). A local initialized from a call of one of the
+/// `AlwaysValidFunctions` (`local client = LocalPlayer()`) is never flagged, whatever its name.
 /// The call is not flagged when `IsValid(e)` or `e:IsValid()` appears anywhere in the callback
 /// before it (by source position, whatever the condition around it), and `e:IsValid()` itself
 /// is never flagged. Field accesses (`e.Field`) and passing `e` to functions are not checked.
@@ -93,16 +55,9 @@ impl Reader for UncheckedEntityInCallback {
                 Yaml::Integer(*position),
             );
         }
-        vec![
-            ("Functions", Yaml::Hash(functions)),
-            ("EntityTables", yaml_strings(DEFAULT_ENTITY_TABLES)),
-            ("EntityNames", yaml_strings(DEFAULT_ENTITY_NAMES)),
-            ("EntityFunctions", yaml_strings(DEFAULT_ENTITY_FUNCTIONS)),
-            (
-                "AlwaysValidFunctions",
-                yaml_strings(DEFAULT_ALWAYS_VALID_FUNCTIONS),
-            ),
-        ]
+        let mut options = vec![("Functions", Yaml::Hash(functions))];
+        options.extend(entity_options());
+        options
     }
 
     fn investigate(&self, ctx: &mut Context) {
@@ -121,23 +76,15 @@ impl Reader for UncheckedEntityInCallback {
         let mut collector = Collector {
             source,
             functions,
-            entity_tables: ctx.option_str_list("EntityTables", DEFAULT_ENTITY_TABLES),
-            entity_functions: ctx.option_str_list("EntityFunctions", DEFAULT_ENTITY_FUNCTIONS),
-            valid_functions: ctx
-                .option_str_list("AlwaysValidFunctions", DEFAULT_ALWAYS_VALID_FUNCTIONS),
-            entity_methods: HashSet::new(),
-            entity_locals: HashSet::new(),
-            valid_locals: HashSet::new(),
+            entities: Entities::new(source, ctx),
             callbacks: Vec::new(),
             method_calls: Vec::new(),
-            checks: Vec::new(),
         };
         walk(&block, &mut collector);
         let checker = Checker {
             source,
             resolution: &resolution,
             collector: &collector,
-            entity_names: ctx.option_str_list("EntityNames", DEFAULT_ENTITY_NAMES),
         };
         let mut found: Vec<(Range<usize>, String)> = Vec::new();
         for (callback, function) in &collector.callbacks {
@@ -166,92 +113,26 @@ struct MethodCall {
 struct Collector<'t> {
     source: &'t Source,
     functions: Vec<(String, usize)>,
-    entity_tables: Vec<String>,
-    entity_functions: Vec<String>,
-    valid_functions: Vec<String>,
-    /// The `function` keywords (by offset) of the methods and fields of `entity_tables`.
-    entity_methods: HashSet<usize>,
-    /// The name tokens (by offset) of locals initialized from an entity function.
-    entity_locals: HashSet<usize>,
-    /// The name tokens (by offset) of locals initialized from an always valid function.
-    valid_locals: HashSet<usize>,
+    /// Which variables hold an entity and where they are checked.
+    entities: Entities<'t>,
     /// Every callback with the name of the function it is passed to.
     callbacks: Vec<(&'t Function, String)>,
     /// Every method call on a plain name, in source order.
     method_calls: Vec<MethodCall>,
-    /// The name tokens checked with `IsValid(name)` or `name:IsValid()`.
-    checks: Vec<Token>,
-}
-
-impl Collector<'_> {
-    /// Whether `expression` is a name in `entity_tables`.
-    fn is_entity_table(&self, expression: &Expression) -> bool {
-        matches!(
-            &expression.kind,
-            ExpressionKind::Name(token) if self.entity_tables.iter().any(|table| table == self.source.text_of(token))
-        )
-    }
-
-    /// The name of the function `expression` calls, when it is a call of a plain function.
-    fn called(&self, expression: &Expression) -> Option<String> {
-        Some(expression.unparenthesized().as_call(self.source)?.0)
-    }
 }
 
 impl<'t> Visitor<'t> for Collector<'t> {
     fn statement(&mut self, statement: &'t Statement) {
-        match &statement.kind {
-            StatementKind::Function { name, function } => {
-                if let Some(table) = name.path.first()
-                    && name.path.len() + usize::from(name.method.is_some()) == 2
-                    && self
-                        .entity_tables
-                        .iter()
-                        .any(|entity| entity == self.source.text_of(table))
-                {
-                    self.entity_methods.insert(function.keyword.start);
-                }
-            }
-            StatementKind::Assignment {
-                targets, values, ..
-            } => {
-                for (target, value) in targets.iter().zip(values) {
-                    if let ExpressionKind::Field { object, .. } = &target.kind
-                        && self.is_entity_table(object)
-                        && let ExpressionKind::Function(function) = &value.unparenthesized().kind
-                    {
-                        self.entity_methods.insert(function.keyword.start);
-                    }
-                }
-            }
-            StatementKind::Local { names, values, .. } => {
-                for (name, value) in names.iter().zip(values) {
-                    let Some(function) = self.called(value) else {
-                        continue;
-                    };
-                    if self.entity_functions.contains(&function) {
-                        self.entity_locals.insert(name.start);
-                    } else if self.valid_functions.contains(&function) {
-                        self.valid_locals.insert(name.start);
-                    }
-                }
-            }
-            _ => {}
-        }
+        self.entities.statement(statement);
     }
 
     fn expression(&mut self, expression: &'t Expression) {
+        self.entities.expression(expression);
         match &expression.kind {
             ExpressionKind::Call { arguments, .. } => {
                 let Some((name, _)) = expression.as_call(self.source) else {
                     return;
                 };
-                if name == "IsValid"
-                    && let [argument] = arguments.values.as_slice()
-                    && let ExpressionKind::Name(token) = &argument.unparenthesized().kind
-                {
-                    self.checks.push(*token);
-                }
                 let callback = self
                     .functions
                     .iter()
@@ -266,9 +147,6 @@ impl<'t> Visitor<'t> for Collector<'t> {
             ExpressionKind::MethodCall { object, name, .. }
             | ExpressionKind::SafeMethodCall { object, name, .. } => {
                 if let ExpressionKind::Name(token) = &object.unparenthesized().kind {
-                    if self.source.text_of(name) == "IsValid" {
-                        self.checks.push(*token);
-                    }
                     self.method_calls.push(MethodCall {
                         object: *token,
                         method: *name,
@@ -285,7 +163,6 @@ struct Checker<'a> {
     source: &'a Source,
     resolution: &'a Resolution<'a>,
     collector: &'a Collector<'a>,
-    entity_names: Vec<String>,
 }
 
 impl Checker<'_> {
@@ -293,6 +170,7 @@ impl Checker<'_> {
     /// captured entity.
     fn check(&self, callback: &Function, function: &str) -> Vec<(Range<usize>, String)> {
         let range = callback.keyword.start..callback.end.end;
+        let entities = &self.collector.entities;
         let mut reported = HashSet::new();
         let mut found = Vec::new();
         for call in &self.collector.method_calls {
@@ -300,13 +178,17 @@ impl Checker<'_> {
             {
                 continue;
             }
-            let Some(variable) = self.variable(&call.object) else {
+            let Some(variable) = self
+                .resolution
+                .reference_at(call.object.start)
+                .and_then(|reference| reference.variable)
+            else {
                 continue;
             };
             let declared = &self.resolution.variables[variable];
             if range.contains(&declared.token.start)
-                || !self.is_entity(variable)
-                || self.checked(variable, range.start..call.object.start)
+                || !entities.is_entity(self.resolution, variable)
+                || entities.checked(self.resolution, variable, range.start..call.object.start)
                 || !reported.insert(variable)
             {
                 continue;
@@ -323,46 +205,6 @@ impl Checker<'_> {
             ));
         }
         found
-    }
-
-    /// The local a name token resolves to.
-    fn variable(&self, token: &Token) -> Option<usize> {
-        self.resolution.reference_at(token.start)?.variable
-    }
-
-    /// Whether the variable with index `variable` holds an entity.
-    fn is_entity(&self, variable: usize) -> bool {
-        let declared = &self.resolution.variables[variable];
-        if self.collector.valid_locals.contains(&declared.token.start) {
-            return false;
-        }
-        match declared.kind {
-            DeclarationKind::Parameter
-                if declared.name == "self"
-                    && declared.function.is_some_and(|keyword| {
-                        self.collector.entity_methods.contains(&keyword.start)
-                    }) =>
-            {
-                true
-            }
-            DeclarationKind::Local
-                if self.collector.entity_locals.contains(&declared.token.start) =>
-            {
-                true
-            }
-            DeclarationKind::Local | DeclarationKind::Parameter | DeclarationKind::ForVariable => {
-                self.entity_names.contains(&declared.name)
-            }
-            DeclarationKind::LocalFunction => false,
-        }
-    }
-
-    /// Whether the variable with index `variable` is checked with `IsValid` inside `range`.
-    fn checked(&self, variable: usize, range: Range<usize>) -> bool {
-        self.collector
-            .checks
-            .iter()
-            .any(|token| range.contains(&token.start) && self.variable(token) == Some(variable))
     }
 }
 

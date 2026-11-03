@@ -17,95 +17,159 @@ use crate::readers::lint::ast::{
 use crate::source::Source;
 use crate::token::TokenKind;
 
-/// Whether the whole file runs on the client only: its name starts with `cl_` (`cl_init.lua`,
-/// `cl_hooks.lua`) or one of its directories is named `client` (`lua/autorun/client`).
-pub fn is_client_file(source: &Source) -> bool {
+/// One of the two realms code runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Realm {
+    /// The client.
+    Client,
+    /// The server.
+    Server,
+}
+
+impl Realm {
+    /// The global that is true in this realm (`CLIENT`, `SERVER`).
+    fn global(self) -> &'static str {
+        match self {
+            Realm::Client => "CLIENT",
+            Realm::Server => "SERVER",
+        }
+    }
+
+    /// The other realm.
+    pub fn opposite(self) -> Realm {
+        match self {
+            Realm::Client => Realm::Server,
+            Realm::Server => Realm::Client,
+        }
+    }
+}
+
+/// Whether the file's name starts with `prefix` or one of its directories is named `directory`.
+fn is_realm_file(source: &Source, prefix: &str, directory: &str) -> bool {
     let path = &source.path;
-    let file_client = path
+    let by_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.to_ascii_lowercase().starts_with("cl_"));
-    let directory_client = path
+        .is_some_and(|name| name.to_ascii_lowercase().starts_with(prefix));
+    let by_directory = path
         .parent()
         .into_iter()
         .flat_map(|parent| parent.components())
-        .any(|component| component.as_os_str().eq_ignore_ascii_case("client"));
-    file_client || directory_client
+        .any(|component| component.as_os_str().eq_ignore_ascii_case(directory));
+    by_name || by_directory
+}
+
+/// Whether the whole file runs on the client only: its name starts with `cl_` (`cl_init.lua`,
+/// `cl_hooks.lua`) or one of its directories is named `client` (`lua/autorun/client`).
+pub fn is_client_file(source: &Source) -> bool {
+    is_realm_file(source, "cl_", "client")
+}
+
+/// Whether the whole file runs on the server only: its name starts with `sv_` (`sv_hooks.lua`)
+/// or one of its directories is named `server` (`lua/autorun/server`).
+pub fn is_server_file(source: &Source) -> bool {
+    is_realm_file(source, "sv_", "server")
+}
+
+/// The realm the whole file runs in, when its name or a directory tells.
+pub fn file_realm(source: &Source) -> Option<Realm> {
+    if is_client_file(source) {
+        Some(Realm::Client)
+    } else if is_server_file(source) {
+        Some(Realm::Server)
+    } else {
+        None
+    }
 }
 
 /// The byte ranges of `block` that only run on the client because a realm check guards them.
 pub fn client_ranges(block: &Block, source: &Source) -> Vec<Range<usize>> {
-    let mut finder = ClientRanges {
+    realm_ranges(block, source, Realm::Client)
+}
+
+/// The byte ranges of `block` that only run in `realm` because a realm check guards them. For
+/// the client: the body of `if CLIENT then` (also `if CLIENT and x then`, `if not SERVER then`),
+/// the `elseif` and `else` branches after `if SERVER then` (or `if not CLIENT then`) and the
+/// rest of a block after a guard such as `if SERVER then return end`; for the server, the same
+/// with the globals swapped.
+pub fn realm_ranges(block: &Block, source: &Source, realm: Realm) -> Vec<Range<usize>> {
+    let mut finder = RealmRanges {
         source,
+        own: realm.global(),
+        other: realm.opposite().global(),
         ranges: Vec::new(),
     };
     walk(block, &mut finder);
     finder.ranges
 }
 
-/// Collects the client-only branches and the code after client guards.
-struct ClientRanges<'a> {
+/// Collects the branches that only run in one realm and the code after guards leaving the other.
+struct RealmRanges<'a> {
     source: &'a Source,
+    /// The global true in the realm (`CLIENT` for the client).
+    own: &'static str,
+    /// The global true in the other realm.
+    other: &'static str,
     ranges: Vec<Range<usize>>,
 }
 
-impl ClientRanges<'_> {
+impl RealmRanges<'_> {
     /// Whether `expression` names the realm global `global` (`CLIENT`, `SERVER`).
     fn is_global(&self, expression: &Expression, global: &str) -> bool {
         matches!(&expression.unparenthesized().kind,
             ExpressionKind::Name(token) if self.source.text_of(token) == global)
     }
 
-    /// Whether `condition` can only be true on the client: `CLIENT`, `not SERVER`, or an
-    /// `and` with such an operand.
-    fn true_on_client_only(&self, condition: &Expression) -> bool {
+    /// Whether `condition` can only be true in the realm: `CLIENT`, `not SERVER`, or an `and`
+    /// with such an operand (for the client).
+    fn true_in_realm_only(&self, condition: &Expression) -> bool {
         let condition = condition.unparenthesized();
-        if self.is_global(condition, "CLIENT") {
+        if self.is_global(condition, self.own) {
             return true;
         }
         match &condition.kind {
             ExpressionKind::Unary { operator, operand }
                 if matches!(operator.kind, TokenKind::Not | TokenKind::Bang) =>
             {
-                self.false_on_client_only(operand)
+                self.false_in_realm_only(operand)
             }
             ExpressionKind::Binary {
                 operator,
                 left,
                 right,
             } if matches!(operator.kind, TokenKind::And | TokenKind::AndAnd) => {
-                self.true_on_client_only(left) || self.true_on_client_only(right)
+                self.true_in_realm_only(left) || self.true_in_realm_only(right)
             }
             _ => false,
         }
     }
 
-    /// Whether `condition` can only be false on the client: `SERVER`, `not CLIENT`, or an `or`
-    /// with such an operand.
-    fn false_on_client_only(&self, condition: &Expression) -> bool {
+    /// Whether `condition` can only be false in the realm: `SERVER`, `not CLIENT`, or an `or`
+    /// with such an operand (for the client).
+    fn false_in_realm_only(&self, condition: &Expression) -> bool {
         let condition = condition.unparenthesized();
-        if self.is_global(condition, "SERVER") {
+        if self.is_global(condition, self.other) {
             return true;
         }
         match &condition.kind {
             ExpressionKind::Unary { operator, operand }
                 if matches!(operator.kind, TokenKind::Not | TokenKind::Bang) =>
             {
-                self.true_on_client_only(operand)
+                self.true_in_realm_only(operand)
             }
             ExpressionKind::Binary {
                 operator,
                 left,
                 right,
             } if matches!(operator.kind, TokenKind::Or | TokenKind::OrOr) => {
-                self.false_on_client_only(left) || self.false_on_client_only(right)
+                self.false_in_realm_only(left) || self.false_in_realm_only(right)
             }
             _ => false,
         }
     }
 }
 
-impl<'t> Visitor<'t> for ClientRanges<'_> {
+impl<'t> Visitor<'t> for RealmRanges<'_> {
     fn enter_block(&mut self, block: &'t Block) {
         for statement in &block.statements {
             let StatementKind::If {
@@ -121,7 +185,7 @@ impl<'t> Visitor<'t> for ClientRanges<'_> {
                 clause.body.statements.last().map(|last| &last.kind),
                 Some(StatementKind::Return { .. })
             );
-            if otherwise.is_none() && leaves && self.false_on_client_only(&clause.condition) {
+            if otherwise.is_none() && leaves && self.false_in_realm_only(&clause.condition) {
                 self.ranges.push(statement.range.end..block.range.end);
                 break;
             }
@@ -135,14 +199,14 @@ impl<'t> Visitor<'t> for ClientRanges<'_> {
         else {
             return;
         };
-        let mut client_after = false;
+        let mut realm_after = false;
         for clause in clauses {
-            if client_after || self.true_on_client_only(&clause.condition) {
+            if realm_after || self.true_in_realm_only(&clause.condition) {
                 self.ranges.push(clause.body.range.clone());
             }
-            client_after |= self.false_on_client_only(&clause.condition);
+            realm_after |= self.false_in_realm_only(&clause.condition);
         }
-        if let (true, Some((keyword, body))) = (client_after, otherwise) {
+        if let (true, Some((keyword, body))) = (realm_after, otherwise) {
             self.ranges
                 .push(keyword.start..body.range.end.max(keyword.end));
         }
@@ -199,6 +263,41 @@ pub fn server_handlers<'t>(block: &'t Block, source: &Source, registrar: &str) -
     }
     let client = client_ranges(block, source);
     let is_client = |offset: usize| client.iter().any(|range| range.contains(&offset));
+    let mut seen = HashSet::new();
+    let mut handlers = Vec::new();
+    for registration in registrations(block, source, registrar) {
+        if is_client(registration.call.range.start) {
+            continue;
+        }
+        for function in registration.functions {
+            if !is_client(function.keyword.start) && seen.insert(function.keyword.start) {
+                handlers.push(Handler {
+                    call: registration.call,
+                    function,
+                });
+            }
+        }
+    }
+    handlers
+}
+
+/// A call of a registering function such as `net.Receive` and the functions it may register.
+#[derive(Debug, Clone)]
+pub struct Registration<'t> {
+    /// The registering call.
+    pub call: &'t Expression,
+    /// The functions the handler argument may be: the function literal, or every definition in
+    /// the file of the name it passes (none when the file does not define it).
+    pub functions: Vec<&'t Function>,
+}
+
+/// Every call of `registrar` in `block` with a handler argument, in source order, wherever it
+/// runs, with the functions its handler may be (see [`server_handlers`]).
+pub fn registrations<'t>(
+    block: &'t Block,
+    source: &Source,
+    registrar: &str,
+) -> Vec<Registration<'t>> {
     let mut finder = HandlerFinder {
         source,
         registrar,
@@ -206,27 +305,37 @@ pub fn server_handlers<'t>(block: &'t Block, source: &Source, registrar: &str) -
         registrations: Vec::new(),
     };
     walk(block, &mut finder);
-    let mut seen = HashSet::new();
-    let mut handlers = Vec::new();
-    for (call, handler) in finder.registrations {
-        if is_client(call.range.start) {
-            continue;
-        }
-        let functions: Vec<&Function> = match &handler.unparenthesized().kind {
-            ExpressionKind::Function(function) => vec![function],
-            _ => handler
-                .dotted_name(source)
-                .and_then(|name| finder.definitions.get(&name))
-                .cloned()
-                .unwrap_or_default(),
-        };
-        for function in functions {
-            if !is_client(function.keyword.start) && seen.insert(function.keyword.start) {
-                handlers.push(Handler { call, function });
-            }
-        }
-    }
-    handlers
+    finder
+        .registrations
+        .iter()
+        .map(|(call, handler)| Registration {
+            call,
+            functions: match &handler.unparenthesized().kind {
+                ExpressionKind::Function(function) => vec![function],
+                _ => handler
+                    .dotted_name(source)
+                    .and_then(|name| finder.definitions.get(&name))
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+        })
+        .collect()
+}
+
+/// The functions `block` defines under a name (`local function f`, `function a.b()`,
+/// `function a:b()` as `a.b`, `local f = function`, `a.b = function`), by that name.
+pub fn named_functions<'t>(
+    block: &'t Block,
+    source: &Source,
+) -> HashMap<String, Vec<&'t Function>> {
+    let mut finder = HandlerFinder {
+        source,
+        registrar: "",
+        definitions: HashMap::new(),
+        registrations: Vec::new(),
+    };
+    walk(block, &mut finder);
+    finder.definitions
 }
 
 /// Collects the registering calls and the named function definitions of a file.

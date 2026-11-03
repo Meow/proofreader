@@ -39,6 +39,8 @@ pub struct Summary {
     pub corrected: usize,
     /// Offenses that could be corrected with `--fix` but were not.
     pub correctable: usize,
+    /// Offenses not corrected: the ones the human-readable formats list.
+    pub remaining: usize,
 }
 
 impl Summary {
@@ -52,10 +54,13 @@ impl Summary {
             correctable: offenses()
                 .filter(|offense| offense.correctable() && !offense.corrected)
                 .count(),
+            remaining: offenses().filter(|offense| !offense.corrected).count(),
         }
     }
 
-    /// The summary sentence, such as `3 files inspected, 1 offense detected, 1 offense autocorrectable`.
+    /// The summary sentence, such as `3 files inspected, 1 offense detected, 1 offense autocorrectable`;
+    /// after corrections, also how many offenses remain
+    /// (`1 file inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining`).
     pub fn line(&self) -> String {
         let mut line = format!("{} inspected, ", plural(self.files, "file"));
         if self.offenses == 0 {
@@ -65,6 +70,9 @@ impl Summary {
         }
         if self.corrected > 0 {
             let _ = write!(line, ", {} corrected", plural(self.corrected, "offense"));
+            if self.remaining > 0 {
+                let _ = write!(line, ", {} remaining", plural(self.remaining, "offense"));
+            }
         }
         if self.correctable > 0 {
             let _ = write!(
@@ -100,12 +108,19 @@ fn paint(text: &str, severity: Option<Severity>, color: bool) -> String {
     }
 }
 
-/// The progress symbol of a file: its worst severity's letter, `E` for an I/O error, or `.`.
+/// The offenses of `report` that were not corrected, which the human-readable formats list:
+/// with `--fix`, offenses fixed during the run are only counted in the summary.
+fn open_offenses(report: &FileReport) -> impl Iterator<Item = &Offense> {
+    report.offenses.iter().filter(|offense| !offense.corrected)
+}
+
+/// The progress symbol of a file: the letter of the worst severity among its offenses that were
+/// not corrected, `E` for an I/O error, or `.`.
 pub fn progress_symbol(report: &FileReport, color: bool) -> String {
     if report.error.is_some() {
         return paint("E", Some(Severity::Error), color);
     }
-    match report.offenses.iter().map(|offense| offense.severity).max() {
+    match open_offenses(report).map(|offense| offense.severity).max() {
         Some(severity) => paint(&severity.symbol().to_string(), Some(severity), color),
         None => paint(".", None, color),
     }
@@ -182,11 +197,12 @@ pub fn render(format: Format, reports: &[FileReport], color: bool) -> String {
     }
 }
 
-/// Clang-style offense listing followed by the summary.
+/// Clang-style listing of the offenses that were not corrected, followed by the summary. `quiet`
+/// (without `progress`) prints nothing when no offense remains.
 fn render_clang(reports: &[FileReport], color: bool, progress: bool) -> String {
     let summary = Summary::new(reports);
     let mut out = String::new();
-    if summary.offenses == 0 {
+    if summary.remaining == 0 {
         if progress {
             let _ = writeln!(out, "\n{}", summary.line());
         }
@@ -197,7 +213,7 @@ fn render_clang(reports: &[FileReport], color: bool, progress: bool) -> String {
     }
     out.push_str("Offenses:\n\n");
     for report in reports {
-        for offense in &report.offenses {
+        for offense in open_offenses(report) {
             write_offense(&mut out, &report.path.display().to_string(), offense, color);
         }
     }
@@ -207,9 +223,7 @@ fn render_clang(reports: &[FileReport], color: bool, progress: bool) -> String {
 
 /// Writes one clang-style offense: header, source line and carets.
 fn write_offense(out: &mut String, path: &str, offense: &Offense, color: bool) {
-    let marker = if offense.corrected {
-        "[Corrected] "
-    } else if offense.correctable() {
+    let marker = if offense.correctable() {
         "[Correctable] "
     } else {
         ""
@@ -244,18 +258,18 @@ fn write_offense(out: &mut String, path: &str, offense: &Offense, color: bool) {
     let _ = writeln!(out, "{line}\n{indent}{}", "^".repeat(width));
 }
 
-/// Offense counts per reader, most frequent first, plus a total.
+/// Counts per reader of the offenses that were not corrected, most frequent first, plus a total.
 fn render_counts(reports: &[FileReport]) -> String {
     let mut counts: BTreeMap<&str, (usize, bool)> = BTreeMap::new();
-    for offense in reports.iter().flat_map(|report| &report.offenses) {
+    for offense in reports.iter().flat_map(open_offenses) {
         let entry = counts.entry(offense.reader).or_default();
         entry.0 += 1;
-        entry.1 |= offense.correctable() || offense.corrected;
+        entry.1 |= offense.correctable();
     }
     let total: usize = counts.values().map(|(count, _)| count).sum();
     let files = reports
         .iter()
-        .filter(|report| !report.offenses.is_empty())
+        .filter(|report| open_offenses(report).next().is_some())
         .count();
     let width = total.to_string().len() + 2;
     let mut rows: Vec<(&str, usize, bool)> = counts
@@ -273,11 +287,11 @@ fn render_counts(reports: &[FileReport]) -> String {
     out
 }
 
-/// One line per file with offenses.
+/// One line per file with offenses that were not corrected.
 fn render_files(reports: &[FileReport]) -> String {
     reports
         .iter()
-        .filter(|report| !report.offenses.is_empty())
+        .filter(|report| open_offenses(report).next().is_some())
         .map(|report| format!("{}\n", report.path.display()))
         .collect()
 }
@@ -530,6 +544,7 @@ mod tests {
             offenses: 1,
             corrected: 0,
             correctable: 1,
+            remaining: 1,
         };
         assert_eq!(
             summary.line(),
@@ -540,6 +555,15 @@ mod tests {
             offenses: 4,
             corrected: 2,
             correctable: 0,
+            remaining: 2,
+        };
+        assert_eq!(
+            summary.line(),
+            "3 files inspected, 4 offenses detected, 2 offenses corrected, 2 offenses remaining"
+        );
+        let summary = Summary {
+            remaining: 0,
+            ..summary
         };
         assert_eq!(
             summary.line(),
@@ -592,12 +616,45 @@ mod tests {
     }
 
     #[test]
-    fn corrected_marker() {
+    fn corrected_offenses_are_only_counted() {
         let mut fixed = offense(1, 1, 1, "x", true);
         fixed.corrected = true;
-        let mut out = String::new();
-        write_offense(&mut out, "t.lua", &fixed, false);
-        assert!(out.starts_with("t.lua:1:1: C: [Corrected] Layout/Thing"));
+        let mut other = fixed.clone();
+        other.reader = "Style/Other";
+        let open = offense(2, 1, 1, "y", false);
+        let reports = vec![
+            report("a.lua", vec![fixed.clone(), open]),
+            report("b.lua", vec![fixed, other]),
+        ];
+        let expected = "\nOffenses:\n\na.lua:2:1: C: Layout/Thing: Bad thing.\ny\n^\n\n\
+                        2 files inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining\n";
+        assert_eq!(render(Format::Progress, &reports, false), expected);
+        assert_eq!(render(Format::Quiet, &reports, false), &expected[1..]);
+        assert_eq!(
+            render(Format::Offenses, &reports, false),
+            "1  Layout/Thing\n--\n1  Total in 1 file\n"
+        );
+        assert_eq!(render(Format::Files, &reports, false), "a.lua\n");
+        assert_eq!(progress_symbol(&reports[0], false), "C");
+        assert_eq!(progress_symbol(&reports[1], false), ".");
+        let json = render(Format::Json, &reports, false);
+        assert_eq!(json.matches("\"corrected\":true").count(), 3);
+    }
+
+    #[test]
+    fn fully_corrected_runs() {
+        let mut fixed = offense(1, 1, 1, "x", true);
+        fixed.corrected = true;
+        let reports = vec![report("a.lua", vec![fixed])];
+        assert_eq!(
+            render(Format::Progress, &reports, false),
+            "\n1 file inspected, 1 offense detected, 1 offense corrected\n"
+        );
+        assert_eq!(render(Format::Quiet, &reports, false), "");
+        assert_eq!(
+            render(Format::Offenses, &reports, false),
+            "--\n0  Total in 0 files\n"
+        );
     }
 
     #[test]

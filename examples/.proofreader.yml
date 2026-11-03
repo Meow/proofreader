@@ -190,6 +190,36 @@ Layout/TrailingWhitespace:
   Severity: convention
   AutoCorrect: true
 
+# Checks for EmmyLua classes that inherit from themselves.
+Lint/CircularDocClass:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for assignments to `const` locals and declarations of a visible constant's name.
+Lint/ConstReassignment:
+  Enabled: true
+  Severity: error
+  AutoCorrect: true
+
+# Checks for EmmyLua annotations with a missing name or type or an unclosed bracket.
+Lint/DocSyntax:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for fields documented twice for the same class.
+Lint/DuplicateDocField:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
+# Checks for EmmyLua classes, enums and aliases defined twice in a file.
+Lint/DuplicateDocType:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for network strings, receivers, console commands and variables registered twice.
 Lint/DuplicateRegistration:
   Enabled: true
@@ -233,11 +263,43 @@ Lint/GlobalAssignment:
                    'Schema', 'ITEM', 'FACTION', 'CLASS', 'ATTRIBUTE', 'LANGUAGE', 'CHAT_CLASS',
                    'PACKAGE', 'CMD', 'ROLE', 'THEME', 'SKILL', 'PLAYER']
 
+# Checks for hook names that are empty, padded with whitespace or not a string.
+Lint/HookName:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  Functions: { hook.Add: 1, hook.Remove: 1, hook.Run: 1, hook.Call: 1, gamemode.Call: 1 }
+
+# Checks for conditions that are always truthy or always falsy because of literals.
+Lint/LiteralAsCondition:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+  AssertFunctions: ['assert']
+
+# Checks that the reads of a net message in a file match the writes of its sender there.
+Lint/NetMessageMismatch:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for assert messages that are built even when the assertion passes.
 Lint/NonLiteralAssertMessage:
   Enabled: false
   Severity: warning
   AutoCorrect: true
+
+# Checks for entities tested against `nil` instead of with `IsValid`.
+Lint/NullEntityCheck:
+  Enabled: false
+  Severity: warning
+  AutoCorrect: true
+  EntityTables: ['ENT', 'SWEP', 'EFFECT', 'PANEL', 'TOOL']
+  EntityNames: ['ply', 'player', 'pl', 'client', 'ent', 'entity', 'target', 'victim', 'attacker',
+                'inflictor', 'owner', 'weapon', 'wep', 'npc', 'vehicle', 'ragdoll', 'prop', 'panel']
+  EntityFunctions: ['ents.Create', 'ents.CreateClientProp', 'Entity', 'player.GetBySteamID',
+                    'player.GetBySteamID64', 'vgui.Create']
+  AlwaysValidFunctions: ['LocalPlayer']
 
 # Checks for labels defined twice in the same block.
 Lint/RedefinedLabel:

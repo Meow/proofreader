@@ -206,9 +206,14 @@ fn fix_writes_corrections_and_is_idempotent() {
     let output = proofreader(&dir, &["--fix", "--only", REFERENCE_READERS]);
     assert_eq!(output.status.code(), Some(1), "the long line remains");
     let text = stdout(&output);
-    assert!(text.contains("offenses.lua:1:12: C: [Corrected] Layout/TrailingWhitespace"));
+    assert!(
+        !text.contains("Layout/TrailingWhitespace"),
+        "fixed offenses are not listed"
+    );
     assert!(text.contains("offenses.lua:3:121: C: Layout/LineLength"));
-    assert!(text.ends_with("1 file inspected, 4 offenses detected, 3 offenses corrected\n"));
+    assert!(text.ends_with(
+        "1 file inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining\n"
+    ));
     let fixed = fs::read_to_string(&file).expect("fixed file");
     assert!(fixed.starts_with("local a = 1\nlocal b = 2\nlocal message"));
     assert!(fixed.ends_with("\n\nreturn a + b\n"));

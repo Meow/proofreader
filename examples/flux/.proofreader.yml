@@ -14,6 +14,7 @@
 # - a doc comment on every function, documenting every parameter and returned value (local
 #   functions may go without)
 # - players are called `actor`; deferred callbacks check `IsValid(actor)` like any entity
+# - plugin hooks run through Plugin.call as well as hook.Run
 # - blank lines around multi-line blocks, after guard clauses and between definitions
 # - Flux's cached util.get_material instead of Material in functions that run every frame
 # - the syntax extensions of LuaJIT 3.0 where they say the same in fewer words: `x += 1`,
@@ -104,6 +105,16 @@ Lint/UncheckedEntityInCallback:
   EntityNames: ['actor', 'ply', 'player', 'pl', 'client', 'ent', 'entity', 'target', 'victim',
                 'attacker', 'inflictor', 'owner', 'weapon', 'wep', 'npc', 'vehicle', 'ragdoll',
                 'prop', 'panel']
+
+Lint/HookName:
+  # not the default: Plugin.call added to the functions taking a hook name
+  Functions:
+    hook.Add: 1
+    hook.Remove: 1
+    hook.Run: 1
+    hook.Call: 1
+    gamemode.Call: 1
+    Plugin.call: 1
 
 Naming/ClassName:
   Functions: ['class', 'mod', 'extends']

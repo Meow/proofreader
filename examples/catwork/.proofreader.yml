@@ -5,6 +5,7 @@
 # - lowerCamelCase locals and parameters, PascalCase functions and methods (cw.player:GetName())
 # - no doc comment required on every function
 # - the theme being built lives in the global `cwTHEME`
+# - plugin hooks run through plugin.Call as well as hook.Run
 # - SQL through the bundled MySQL wrapper: queries run with `:RawQuery`, values escaped with
 #   `:Escape`
 # - plain Lua for stock Garry's Mod: none of the syntax extensions of LuaJIT 3.0 (`x += 1`,
@@ -35,6 +36,15 @@ Lint/GlobalAssignment:
   AllowedGlobals: ['cwTHEME', 'GM', 'GAMEMODE', 'ENT', 'SWEP', 'EFFECT', 'TOOL', 'PANEL', 'PLUGIN',
                    'SCHEMA', 'Schema', 'ITEM', 'FACTION', 'CLASS', 'ATTRIBUTE', 'LANGUAGE',
                    'CHAT_CLASS', 'PACKAGE', 'CMD', 'ROLE', 'THEME', 'SKILL', 'PLAYER']
+
+Lint/HookName:
+  Functions:
+    hook.Add: 1
+    hook.Remove: 1
+    hook.Run: 1
+    hook.Call: 1
+    gamemode.Call: 1
+    plugin.Call: 1                         # cw.plugin.Call
 
 Security/SqlInjection:
   Methods: ['query', 'RawQuery']           # cw.database:RawQuery

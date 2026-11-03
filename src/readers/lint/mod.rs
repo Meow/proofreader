@@ -1,15 +1,26 @@
 //! Lint readers: likely bugs.
 
 pub mod ast;
+pub mod circular_doc_class;
+pub mod const_reassignment;
+pub mod doc_annotations;
+pub mod doc_syntax;
+pub mod duplicate_doc_field;
+pub mod duplicate_doc_type;
 pub mod duplicate_registration;
 pub mod duplicate_require;
 pub mod duplicate_table_key;
+pub mod entities;
 pub mod extended_syntax;
 pub mod format_argument_count;
 pub mod global_assignment;
+pub mod hook_name;
 pub mod libraries;
+pub mod literal_as_condition;
 pub mod nesting;
+pub mod net_message_mismatch;
 pub mod non_literal_assert_message;
+pub mod null_entity_check;
 pub mod redefined_label;
 pub mod redefined_local;
 pub mod remove_in_forward_loop;
