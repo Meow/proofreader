@@ -2526,9 +2526,9 @@ end
     }
 
     #[test]
-    #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+    #[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
     fn lexes_the_flux_corpus() {
-        let root = std::path::Path::new("/home/luna/code/flux-ce");
+        let root = &crate::testing::corpus_dir();
         let mut count = 0;
         let mut lumen_files = 0;
         for entry in walkdir::WalkDir::new(root)

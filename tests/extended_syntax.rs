@@ -11,9 +11,7 @@ use proofreader::config::Config;
 use proofreader::offense::Offense;
 use proofreader::runner::{Options, ReaderFilter, inspect_source};
 use proofreader::source::Source;
-
-/// The LuaJIT with the syntax extensions.
-const LUAJIT: &str = "/home/luna/code/nl/LuaJIT/src/luajit";
+use proofreader::testing::luajit;
 
 /// The readers whose fixes write the syntax extensions.
 const REWRITING_READERS: [&str; 5] = [
@@ -26,7 +24,7 @@ const REWRITING_READERS: [&str; 5] = [
 
 /// What `code` prints when LuaJIT runs it; panics when it fails.
 fn run(code: &str) -> String {
-    let mut child = Command::new(LUAJIT)
+    let mut child = Command::new(luajit())
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -73,7 +71,7 @@ fn correct(code: &str, readers: &[&str]) -> (String, Vec<Offense>) {
 }
 
 #[test]
-#[ignore = "runs the LuaJIT at /home/luna/code/nl/LuaJIT"]
+#[ignore = "runs the LuaJIT at LUAJIT (default /home/luna/code/nl/LuaJIT/src/luajit)"]
 fn rewrites_keep_what_the_corpus_prints() {
     let corpus = include_str!("extended/corpus.lua");
     let expected = run(corpus);
@@ -98,7 +96,7 @@ fn rewrites_keep_what_the_corpus_prints() {
 }
 
 #[test]
-#[ignore = "runs the LuaJIT at /home/luna/code/nl/LuaJIT"]
+#[ignore = "runs the LuaJIT at LUAJIT (default /home/luna/code/nl/LuaJIT/src/luajit)"]
 fn lowering_keeps_what_the_extended_corpus_prints() {
     let corpus = include_str!("extended/extended.lua");
     let expected = run(corpus);

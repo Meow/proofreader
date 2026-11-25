@@ -155,9 +155,9 @@ fn a_clean_template_has_no_offenses() {
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn corrections_keep_the_markup_of_the_flux_templates() {
-    let root = Path::new("/home/luna/code/flux-ce");
+    let root = &proofreader::testing::corpus_dir();
     let mut templates = 0;
     for entry in walkdir::WalkDir::new(root)
         .into_iter()

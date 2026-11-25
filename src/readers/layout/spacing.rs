@@ -216,8 +216,6 @@ pub fn spaced_gap_offense(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
     use crate::config::Config;
     use crate::runner::{Options, ReaderFilter, inspect_source};
@@ -295,9 +293,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+    #[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
     fn corrections_keep_the_flux_corpus_tokens() {
-        let root = Path::new("/home/luna/code/flux-ce");
+        let root = &crate::testing::corpus_dir();
         let only: Vec<String> = SPACING_READERS
             .iter()
             .map(|name| (*name).to_owned())

@@ -7,10 +7,8 @@ use std::path::Path;
 use proofreader::config::Config;
 use proofreader::runner::{Options, ReaderFilter, inspect_source};
 use proofreader::source::Source;
+use proofreader::testing::corpus_dir;
 use proofreader::token::TokenKind;
-
-/// Where the Flux corpus is checked out.
-const CORPUS: &str = "/home/luna/code/flux-ce";
 
 /// The readers whose fixes rewrite code rather than its layout or spelling; each has its own
 /// test below and is left out of the test of every correction at once.
@@ -116,9 +114,9 @@ fn only_removals(before: &[Normalized], after: &[Normalized]) -> Result<(), Stri
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn all_corrections_keep_the_code_of_the_flux_corpus() {
-    let root = Path::new(CORPUS);
+    let root = &corpus_dir();
     let config = Config::defaults(root);
     let options = Options {
         fix: true,
@@ -167,9 +165,9 @@ fn all_corrections_keep_the_code_of_the_flux_corpus() {
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn local_alias_corrections_only_replace_paths() {
-    let root = Path::new(CORPUS);
+    let root = &corpus_dir();
     let config = Config::defaults(root);
     let options = Options {
         fix: true,
@@ -214,9 +212,9 @@ fn local_alias_corrections_only_replace_paths() {
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn comparison_corrections_only_rewrite_compared_calls() {
-    let root = Path::new(CORPUS);
+    let root = &corpus_dir();
     let config = Config::defaults(root);
     let readers = [
         "Performance/DistanceComparison".to_owned(),
@@ -341,9 +339,9 @@ fn other_offense_counts(source: &Source, config: &Config) -> HashMap<&'static st
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn line_length_corrections_only_break_lines() {
-    let root = Path::new(CORPUS);
+    let root = &corpus_dir();
     let config = Config::defaults(root);
     let options = Options {
         fix: true,
@@ -429,9 +427,9 @@ fn fixing(readers: &[&str]) -> Options {
 }
 
 #[test]
-#[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+#[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
 fn extended_syntax_rewrites_and_lowering_round_trip() {
-    let root = Path::new(CORPUS);
+    let root = &corpus_dir();
     let extending = enabling(root, &EXTENDING_READERS);
     let lowering = enabling(root, &["Lint/ExtendedSyntax"]);
     let syntax = Options {

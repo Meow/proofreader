@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+    #[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
     fn corrections_keep_the_code_of_the_flux_corpus() {
         use crate::config::Config;
         use crate::runner::{Options, ReaderFilter, inspect_source};
@@ -1349,7 +1349,7 @@ mod tests {
             ..Options::default()
         };
         let config = Config::defaults(std::path::Path::new("."));
-        let root = std::path::Path::new("/home/luna/code/flux-ce");
+        let root = &crate::testing::corpus_dir();
         let mut changed = 0;
         for entry in walkdir::WalkDir::new(root)
             .into_iter()
