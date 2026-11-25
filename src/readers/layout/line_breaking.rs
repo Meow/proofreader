@@ -38,6 +38,12 @@ const STEPS: usize = 12;
 /// How many simulated passes planning one line may run in total.
 const SIMULATIONS: usize = 32;
 
+/// The most code tokens a line may hold for [`LineBreaker::plan`] to try breaking it.
+pub const MAX_TOKENS: usize = 1_000;
+
+/// The deepest nesting of groups opened on a line for [`LineBreaker::plan`] to try breaking it.
+pub const MAX_GROUPS: usize = 100;
+
 /// A rewrite of whole lines: `range` spans them, without the line break ending the last one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
@@ -57,7 +63,7 @@ pub struct LineBreaker<'a> {
 }
 
 /// A block or bracket pair opened on the scanned line.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Group {
     /// Index of the block in the [`BlockStructure`].
     block: usize,
@@ -65,6 +71,12 @@ struct Group {
     open: usize,
     /// Index of the closing token in [`Line::tokens`], when it is on the line.
     close: Option<usize>,
+    /// The group around the opening token, when there is one.
+    parent: Option<usize>,
+    /// Whether every group around the opening token is a bracket pair.
+    within_brackets: bool,
+    /// Indexes in [`Line::tokens`] of the commas directly inside the group.
+    commas: Vec<usize>,
 }
 
 /// The code of one line together with the blocks it opens and closes.
@@ -75,9 +87,12 @@ struct Line {
     overflow: usize,
     /// The code tokens, a trailing comment excluded.
     tokens: Vec<Token>,
-    /// For every token, the groups open when it is reached, outermost first; a closing token
-    /// no longer counts the group it closes, an opening token not yet the one it opens.
-    enclosing: Vec<Vec<usize>>,
+    /// For every token, the innermost group open when it is reached; a closing token no longer
+    /// counts the group it closes, an opening token not yet the one it opens.
+    innermost: Vec<Option<usize>>,
+    /// For every token, whether it lies between the bars around the parameters of a short
+    /// function (`|a, b|`), whose commas are no place for a line break.
+    in_parameters: Vec<bool>,
     groups: Vec<Group>,
     /// The groups still open at the end of the line.
     open_at_end: Vec<usize>,
@@ -93,23 +108,18 @@ impl Line {
 
     /// Whether token `index` is outside every group opened on the line.
     fn is_top(&self, index: usize) -> bool {
-        self.enclosing[index].is_empty()
+        self.innermost[index].is_none()
     }
 
     /// The innermost group around token `index`.
     fn innermost(&self, index: usize) -> Option<usize> {
-        self.enclosing[index].last().copied()
+        self.innermost[index]
     }
 
     /// Whether token `index` lies between the bars around the parameters of a short function
     /// (`|a, b|`), whose commas are no place for a line break.
     fn in_parameters(&self, index: usize) -> bool {
-        self.tokens[..index]
-            .iter()
-            .filter(|token| token.kind == TokenKind::Bar)
-            .count()
-            % 2
-            == 1
+        self.in_parameters[index]
     }
 }
 
@@ -217,6 +227,26 @@ impl<'a> LineBreaker<'a> {
             opened,
             closed,
         }
+    }
+
+    /// Whether line `number` holds more than [`MAX_TOKENS`] code tokens or nests more than
+    /// [`MAX_GROUPS`] groups opened on it, which [`LineBreaker::plan`] does not try to break.
+    pub fn is_too_complex(&self, number: u32) -> bool {
+        let mut count = 0;
+        let mut depth = 0usize;
+        for token in self.source.code_tokens_on_line(number) {
+            count += 1;
+            if self.closed.contains_key(&token.start) {
+                depth = depth.saturating_sub(1);
+            }
+            if self.opened.contains_key(&token.start) {
+                depth += 1;
+            }
+            if count > MAX_TOKENS || depth > MAX_GROUPS {
+                return true;
+            }
+        }
+        false
     }
 
     /// The rewrite that brings line `number` within the maximum length, if one is found.
@@ -339,9 +369,15 @@ impl<'a> LineBreaker<'a> {
         }
         let mut groups: Vec<Group> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
-        let mut enclosing = Vec::with_capacity(tokens.len());
+        let mut innermost = Vec::with_capacity(tokens.len());
+        let mut in_parameters = Vec::with_capacity(tokens.len());
+        let mut bars = 0usize;
         let mut outer_close = None;
         for (index, token) in tokens.iter().enumerate() {
+            in_parameters.push(bars % 2 == 1);
+            if token.kind == TokenKind::Bar {
+                bars += 1;
+            }
             if let Some(&block) = self.closed.get(&token.start) {
                 match stack
                     .iter()
@@ -360,12 +396,25 @@ impl<'a> LineBreaker<'a> {
                     }
                 }
             }
-            enclosing.push(stack.clone());
+            let parent = stack.last().copied();
+            innermost.push(parent);
+            if token.kind == TokenKind::Comma
+                && let Some(group) = parent
+            {
+                groups[group].commas.push(index);
+            }
             if let Some(&block) = self.opened.get(&token.start) {
+                let within_brackets = parent.is_none_or(|outer| {
+                    groups[outer].within_brackets
+                        && self.structure.block(groups[outer].block).kind.is_bracket()
+                });
                 groups.push(Group {
                     block,
                     open: index,
                     close: None,
+                    parent,
+                    within_brackets,
+                    commas: Vec::new(),
                 });
                 stack.push(groups.len() - 1);
             }
@@ -376,7 +425,8 @@ impl<'a> LineBreaker<'a> {
             indent,
             overflow,
             tokens,
-            enclosing,
+            innermost,
+            in_parameters,
             groups,
             open_at_end: stack,
             outer_close,
@@ -449,7 +499,7 @@ impl<'a> LineBreaker<'a> {
     /// Whether `inner` is a table constructor passed as the last argument of the call `outer`
     /// on the same line, which unfolds before the call (`f(a, {` ... `})`).
     fn is_last_table_argument(&self, line: &Line, inner: usize, outer: usize) -> bool {
-        let (table, call) = (line.groups[inner], line.groups[outer]);
+        let (table, call) = (&line.groups[inner], &line.groups[outer]);
         self.structure.block(table.block).kind == BlockKind::Brace
             && line.innermost(table.open) == Some(outer)
             && (table.open - 1 == call.open || line.tokens[table.open - 1].kind == TokenKind::Comma)
@@ -461,7 +511,13 @@ impl<'a> LineBreaker<'a> {
     /// Whether `group` is a call's argument list or a table constructor outside any keyword
     /// block of the line that opens before the limit and holds the overrun.
     fn is_unfoldable(&self, line: &Line, group: usize, limit: usize) -> bool {
-        let Group { block, open, close } = line.groups[group];
+        let Group {
+            block,
+            open,
+            close,
+            within_brackets,
+            ..
+        } = line.groups[group];
         let kind = self.structure.block(block).kind;
         let opener = line.tokens[open];
         let call = kind == BlockKind::Paren
@@ -472,12 +528,7 @@ impl<'a> LineBreaker<'a> {
             && open < limit
             && open + 1 < line.tokens.len()
             && close != Some(open + 1)
-            && line.enclosing[open].iter().all(|&outer| {
-                self.structure
-                    .block(line.groups[outer].block)
-                    .kind
-                    .is_bracket()
-            })
+            && within_brackets
             && opener.end <= line.overflow
             && close.is_none_or(|close| {
                 line.tokens[close].end > line.overflow
@@ -490,18 +541,20 @@ impl<'a> LineBreaker<'a> {
 
     /// The candidate unfolding `group`; `None` when the lines after it cannot follow.
     fn unfold(&self, line: &Line, group: usize) -> Option<Candidate> {
-        let Group { open, close, .. } = line.groups[group];
+        let Group {
+            open,
+            close,
+            ref commas,
+            ..
+        } = line.groups[group];
         let item_indent = line.indent + self.limits.width;
         let end = close.unwrap_or(line.tokens.len());
         let mut breaks = vec![(line.gap(open), item_indent)];
         breaks.extend(
-            (open + 1..end)
-                .filter(|&index| {
-                    line.tokens[index].kind == TokenKind::Comma
-                        && line.innermost(index) == Some(group)
-                        && !line.in_parameters(index)
-                        && index + 1 < end
-                })
+            commas
+                .iter()
+                .copied()
+                .filter(|&index| !line.in_parameters(index) && index + 1 < end)
                 .map(|index| (line.gap(index), item_indent)),
         );
         match close {
@@ -640,10 +693,9 @@ impl<'a> LineBreaker<'a> {
             }
             let header = own
                 .filter(|header| {
-                    header
-                        .group
-                        .is_some_and(|group| line.enclosing[index] == [group])
-                        && index < header.end
+                    header.group.is_some_and(|group| {
+                        line.innermost(index) == Some(group) && line.groups[group].parent.is_none()
+                    }) && index < header.end
                 })
                 .or(outer.filter(|_| line.is_top(index)));
             if !line.is_top(index) && header.is_none() {

@@ -18,7 +18,9 @@ use crate::source::Source;
 /// a `..`/`and`/`or`/`,` chain or a method chain, indenting new lines by `IndentationWidth`.
 /// Comment-only lines, lines that overflow inside a trailing comment, lines without a usable
 /// break point (a single long string, alignment padding) and lines holding Lumen markup are not
-/// corrected.
+/// corrected. Neither are lines too complex to plan breaks for (more than
+/// [`super::line_breaking::MAX_TOKENS`] code tokens or [`super::line_breaking::MAX_GROUPS`]
+/// nested groups), whose message says so.
 pub struct LineLength;
 
 /// The options of `Layout/LineLength` that decide which lines are too long and how deep new
@@ -70,17 +72,23 @@ impl Reader for LineLength {
             let line = source.line(number);
             let content = line.strip_suffix('\r').unwrap_or(line);
             let end = source.line_range(number).start + content.len();
+            let mut too_complex = false;
             let fix = if correct {
-                breaker
-                    .get_or_insert_with(|| LineBreaker::new(source, limits))
-                    .plan(number)
+                let breaker = breaker.get_or_insert_with(|| LineBreaker::new(source, limits));
+                too_complex = breaker.is_too_complex(number);
+                (!too_complex).then(|| breaker.plan(number)).flatten()
             } else {
                 None
+            };
+            let suffix = if too_complex {
+                " (too complex to break automatically)"
+            } else {
+                ""
             };
             let offense = ctx.add_offense(
                 start..end,
                 format!(
-                    "Line is too long. [{}/{}]",
+                    "Line is too long. [{}/{}]{suffix}",
                     content.chars().count(),
                     limits.max
                 ),
@@ -601,6 +609,29 @@ mod tests {
             "{src:?} is correctable"
         );
         assert_eq!(autocorrect_with(READER, src, options), src);
+    }
+
+    #[test]
+    fn leaves_lines_too_complex_to_plan_alone() {
+        let nested = format!("local x = {}1{}\n", "(".repeat(150), ")".repeat(150));
+        let offenses = inspect(READER, &nested);
+        assert_eq!(offenses.len(), 1);
+        assert_eq!(
+            offenses[0].message,
+            "Line is too long. [311/120] (too complex to break automatically)"
+        );
+        assert!(!offenses[0].correctable());
+        let items: Vec<String> = (0..600).map(|index| format!("a{index}")).collect();
+        let call = format!("f({})\n", items.join(", "));
+        let offenses = inspect(READER, &call);
+        assert!(
+            offenses[0]
+                .message
+                .ends_with("(too complex to break automatically)")
+        );
+        assert_eq!(autocorrect(READER, &call), call);
+        let fewer = format!("f({})\n", items[..100].join(", "));
+        assert!(inspect(READER, &fewer)[0].correctable());
     }
 
     #[test]
