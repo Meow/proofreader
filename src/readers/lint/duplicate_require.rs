@@ -43,7 +43,7 @@ impl Reader for DuplicateRequire {
         let mut finder = VisibleCalls::new(source, |name: &str| {
             functions.iter().any(|function| function == name)
         });
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for duplicate in finder.duplicates {
             ctx.add_offense(
                 duplicate.range,

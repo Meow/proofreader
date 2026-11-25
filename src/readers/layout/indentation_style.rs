@@ -40,6 +40,10 @@ impl Reader for IndentationStyle {
         ]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["spaces", "tabs"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let width = ctx.option_usize("IndentationWidth", 2).max(1);
         if ctx.option_str("EnforcedStyle", "spaces") == "tabs" {
@@ -230,7 +234,7 @@ mod convergence {
     const TABS: &str = "Layout/IndentationStyle:\n  EnforcedStyle: tabs\n";
 
     /// Corrects `text` with every reader under `config`, asserting that the result needs no
-    /// further correction and keeps no correctable offense; returns it.
+    /// further correction and keeps no offense that `--fix` corrects; returns it.
     fn converge(path: &Path, text: &str, config: &Config) -> String {
         let options = Options {
             fix: true,
@@ -244,7 +248,7 @@ mod convergence {
         assert!(again.is_none(), "{} is not idempotent", path.display());
         let correctable: Vec<_> = offenses
             .iter()
-            .filter(|offense| offense.correctable())
+            .filter(|offense| offense.correctable() && !offense.unsafe_fix)
             .map(|offense| (offense.reader, offense.line, &offense.message))
             .collect();
         assert!(
@@ -273,10 +277,10 @@ mod convergence {
 
     /// Converting the Flux corpus to tabs and correcting tab-indented code converge.
     #[test]
-    #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce and Helix from /home/luna/code/helix"]
+    #[ignore = "reads the Flux corpus from PROOFREADER_CORPUS and Helix from PROOFREADER_HELIX (default /home/luna/code/flux-ce and /home/luna/code/helix)"]
     fn tabs_corrections_converge_on_the_corpora() {
-        for root in ["/home/luna/code/flux-ce", "/home/luna/code/helix"] {
-            let root = Path::new(root);
+        for root in [crate::testing::corpus_dir(), crate::testing::helix_dir()] {
+            let root = root.as_path();
             let config = Config::from_yaml_str(TABS, root).expect("config");
             for entry in walkdir::WalkDir::new(root)
                 .into_iter()

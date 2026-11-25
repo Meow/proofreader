@@ -77,7 +77,7 @@ impl Reader for NullEntityCheck {
             sentinels: HashSet::new(),
             repeats: Vec::new(),
         };
-        walk(&block, &mut collector);
+        walk(block, &mut collector);
         let variable = |token: &Token| {
             resolution
                 .reference_at(token.start)

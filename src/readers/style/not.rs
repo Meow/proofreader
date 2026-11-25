@@ -29,6 +29,10 @@ impl Reader for Not {
         vec![("EnforcedStyle", Yaml::String("bang".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["bang", "keyword"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         if ctx.option_str("EnforcedStyle", "bang") == "keyword" {
             keyword(ctx);

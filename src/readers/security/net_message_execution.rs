@@ -102,12 +102,12 @@ impl Reader for NetMessageExecution {
         let Ok(block) = parse(source) else {
             return;
         };
-        let mut handlers: Vec<(Handler, bool)> = server_handlers(&block, source, "net.Receive")
+        let mut handlers: Vec<(Handler, bool)> = server_handlers(block, source, "net.Receive")
             .into_iter()
             .map(|handler| (handler, false))
             .collect();
         for receiver in ctx.option_str_list("PayloadReceivers", DEFAULT_PAYLOAD_RECEIVERS) {
-            for handler in server_handlers(&block, source, &receiver) {
+            for handler in server_handlers(block, source, &receiver) {
                 handlers.push((handler, true));
             }
         }

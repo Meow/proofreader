@@ -62,11 +62,11 @@ impl Reader for ExtendedSyntax {
         let mut finder = Finder {
             source,
             resolution: resolution.as_ref(),
-            placements: placements(&block),
+            placements: placements(block),
             chained: HashSet::new(),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         finder.tokens();
         finder
             .found

@@ -15,6 +15,7 @@ pub mod extended_syntax;
 pub mod format_argument_count;
 pub mod global_assignment;
 pub mod hook_name;
+pub mod invalid_directive;
 pub mod libraries;
 pub mod literal_as_condition;
 pub mod nesting;

@@ -27,6 +27,10 @@ impl Reader for AndOr {
         vec![("EnforcedStyle", Yaml::String("keywords".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["keywords", "symbols"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         if ctx.option_str("EnforcedStyle", "keywords") == "symbols" {
             symbols(ctx);

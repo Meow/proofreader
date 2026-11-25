@@ -49,7 +49,7 @@ impl Reader for LiteralAsCondition {
             asserts: ctx.option_str_list("AssertFunctions", &ASSERT_FUNCTIONS),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message) in finder.found {
             ctx.add_offense(range, message);
         }

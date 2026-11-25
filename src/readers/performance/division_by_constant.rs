@@ -46,7 +46,7 @@ impl Reader for DivisionByConstant {
             max: u32::try_from(max).unwrap_or(0),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for found in finder.found {
             ctx.add_offense_with_fix(
                 found.range,

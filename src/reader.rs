@@ -41,6 +41,12 @@ pub trait Reader: Sync + Send {
         Vec::new()
     }
 
+    /// The values each enumerated option (`EnforcedStyle` and the like) accepts; the
+    /// configuration warns about any other value.
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        Vec::new()
+    }
+
     /// Inspects `ctx.source` and reports offenses through `ctx`.
     fn investigate(&self, ctx: &mut Context);
 }
@@ -56,6 +62,9 @@ pub struct Context<'a> {
     offenses: Vec<Offense>,
     reader: &'static str,
     severity: Severity,
+    /// The byte offset and character column of the last column computed, which later columns
+    /// on the same line count on from.
+    cursor: (usize, u32),
 }
 
 impl<'a> Context<'a> {
@@ -73,7 +82,29 @@ impl<'a> Context<'a> {
             offenses: Vec::new(),
             reader,
             severity,
+            cursor: (0, 1),
         }
+    }
+
+    /// The 1-based character column of byte `offset`, counted from the start of its line or
+    /// from the last column computed when that lies earlier on the same line, so offenses
+    /// reported in order along a long line take time in proportion to the line.
+    fn char_column(&mut self, line: u32, offset: usize) -> u32 {
+        let text = &self.source.text;
+        let line_start = self.source.line_range(line).start;
+        let mut end = offset.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let (from, column) = if (line_start..=end).contains(&self.cursor.0) {
+            self.cursor
+        } else {
+            (line_start, 1)
+        };
+        let counted = u32::try_from(text[from..end].chars().count()).unwrap_or(u32::MAX);
+        let column = column.saturating_add(counted);
+        self.cursor = (end, column);
+        column
     }
 
     /// Lets the reader see the configuration of the other readers for this file.
@@ -104,6 +135,9 @@ impl<'a> Context<'a> {
         let (line, col) = self.source.position(range.start);
         let last = range.end.saturating_sub(1).max(range.start);
         let (last_line, last_col) = self.source.position(last);
+        let char_col = self.char_column(line, range.start);
+        let last_char_col = self.char_column(last_line, last);
+        let (excerpt, excerpt_start) = self.source.excerpt(line, range.start);
         self.offenses.push(Offense {
             reader: self.reader,
             severity: self.severity,
@@ -111,10 +145,14 @@ impl<'a> Context<'a> {
             range,
             line,
             col,
+            char_col,
             last_line,
             last_col,
-            source_line: self.source.line(line).to_owned(),
+            last_char_col,
+            source_line: excerpt.to_owned(),
+            excerpt_start: u32::try_from(excerpt_start).unwrap_or(u32::MAX),
             fix: None,
+            unsafe_fix: false,
             corrected: false,
         });
         let index = self.offenses.len() - 1;
@@ -283,9 +321,89 @@ pub fn find_reader(name_or_department: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The edit distance between `a` and `b`, ignoring case: insertions, deletions, substitutions
+/// and swaps of adjacent characters each count one.
+fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().flat_map(char::to_lowercase).collect();
+    let b: Vec<char> = b.chars().flat_map(char::to_lowercase).collect();
+    let mut rows = vec![(0..=b.len()).collect::<Vec<usize>>()];
+    for i in 1..=a.len() {
+        let mut row = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let substitution = rows[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            row[j] = substitution.min(rows[i - 1][j] + 1).min(row[j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                row[j] = row[j].min(rows[i - 2][j - 2] + 1);
+            }
+        }
+        rows.push(row);
+    }
+    rows[a.len()][b.len()]
+}
+
+/// The candidate nearest to `word`, ignoring case, when it is close enough to be what `word`
+/// misspells: at most a third of the length of `word` (and at least one) edits away. Each
+/// candidate is `(shown, compared)`: `compared` is matched against `word` and `shown` returned.
+pub fn closest<'a>(
+    word: &str,
+    candidates: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<&'a str> {
+    let limit = (word.chars().count() / 3).max(1);
+    candidates
+        .into_iter()
+        .map(|(shown, compared)| (distance(word, compared), shown))
+        .filter(|(edits, _)| *edits <= limit)
+        .min_by_key(|(edits, _)| *edits)
+        .map(|(_, shown)| shown)
+}
+
+/// The reader or department nearest to the misspelled `name`, compared with full names,
+/// departments and bare reader names; see [`closest`].
+pub fn suggest_reader(name: &str) -> Option<&'static str> {
+    let names = reader_names();
+    let candidates = names
+        .iter()
+        .map(|name| (*name, *name))
+        .chain(
+            DEPARTMENTS
+                .iter()
+                .map(|department| (*department, *department)),
+        )
+        .chain(
+            names
+                .iter()
+                .filter_map(|name| name.split_once('/').map(|(_, short)| (*name, short))),
+        );
+    closest(name.trim(), candidates)
+}
+
+/// `; did you mean X?` for a suggestion `X`, or nothing.
+pub fn did_you_mean(suggestion: Option<&str>) -> String {
+    suggestion.map_or_else(String::new, |name| format!("; did you mean {name}?"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggests_the_nearest_names() {
+        assert_eq!(suggest_reader("Style/Nott"), Some("Style/Not"));
+        assert_eq!(
+            suggest_reader("style/stringliteral"),
+            Some("Style/StringLiterals")
+        );
+        assert_eq!(suggest_reader("Stlye"), Some("Style"));
+        assert_eq!(suggest_reader("LineLenght"), Some("Layout/LineLength"));
+        assert_eq!(suggest_reader("Completely/Different"), None);
+        assert_eq!(
+            closest("EnforcedStlye", [("EnforcedStyle", "EnforcedStyle")]),
+            Some("EnforcedStyle")
+        );
+        assert_eq!(closest("ab", [("xy", "xy")]), None);
+        assert_eq!(did_you_mean(Some("X")), "; did you mean X?");
+        assert_eq!(did_you_mean(None), "");
+    }
 
     #[test]
     fn registry_is_sorted_and_unique() {
@@ -353,5 +471,43 @@ mod tests {
         );
         assert_eq!(offense.source_line, "bcd  ");
         assert!(offense.correctable());
+    }
+
+    #[test]
+    fn context_records_character_columns_and_excerpts() {
+        let text = format!("é = 1\n{}x", "é".repeat(500));
+        let source = Source::new("t.lua", text.as_str());
+        let config = ReaderConfig::default();
+        let mut ctx = Context::new(&source, &config, "Layout/Test", Severity::Convention);
+        ctx.add_offense(4..5, "Msg.");
+        let x = text.len() - 1;
+        ctx.add_offense(x - 4..x + 1, "Msg.");
+        ctx.add_offense(9..11, "Msg.");
+        let offenses = ctx.into_offenses();
+        assert_eq!(
+            (
+                offenses[0].col,
+                offenses[0].char_col,
+                offenses[0].last_char_col
+            ),
+            (5, 4, 4)
+        );
+        assert_eq!(
+            (
+                offenses[1].col,
+                offenses[1].char_col,
+                offenses[1].last_char_col
+            ),
+            (997, 499, 501)
+        );
+        assert!(offenses[1].source_line.ends_with("éééx"));
+        assert_eq!(offenses[1].source_line.chars().count(), 103);
+        assert_eq!(
+            offenses[1].excerpt_start as usize,
+            2 * (499 - 1 - crate::offense::EXCERPT_CHARS / 3)
+        );
+        assert_eq!((offenses[2].char_col, offenses[2].last_char_col), (2, 2));
+        assert_eq!(offenses[2].excerpt_start, 0);
+        assert_eq!(offenses[2].source_line.chars().count(), 300);
     }
 }

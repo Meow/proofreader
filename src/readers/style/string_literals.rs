@@ -27,6 +27,10 @@ impl Reader for StringLiterals {
         vec![("EnforcedStyle", Yaml::String("single_quotes".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["single_quotes", "double_quotes"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let double = ctx.option_str("EnforcedStyle", "single_quotes") == "double_quotes";
         let (convert, message): (fn(&str) -> Option<String>, &str) = if double {

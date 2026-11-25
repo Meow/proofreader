@@ -40,6 +40,10 @@ impl Reader for CommentStyle {
         vec![("EnforcedStyle", Yaml::String("lua".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["lua", "c"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let c_style = ctx.option_str("EnforcedStyle", "lua") == "c";
         let source = ctx.source;
@@ -95,18 +99,25 @@ fn comment_only_line(source: &Source, n: u32) -> Option<&Token> {
     (first == last && first.kind == (TokenKind::Comment { long: false })).then_some(first)
 }
 
-/// The fix of a `//` line comment in the `lua` style: its leading slashes become dashes.
+/// The fix of a `//` line comment in the `lua` style: its leading slashes become dashes, and
+/// `//` before a long bracket (`//[[`) becomes `-- `, which keeps it a line comment.
 fn to_dashes(token: &Token, text: &str) -> Option<(String, Vec<Edit>)> {
     if !text.starts_with("//") {
         return None;
     }
-    let slashes = text.len() - text.trim_start_matches('/').len();
+    let rest = text.trim_start_matches('/');
+    let slashes = text.len() - rest.len();
+    let opens_long_bracket = rest
+        .strip_prefix('[')
+        .is_some_and(|after| after.trim_start_matches('=').starts_with('['));
+    let dashes = if slashes == 2 && opens_long_bracket {
+        "-- ".to_owned()
+    } else {
+        "-".repeat(slashes)
+    };
     Some((
         "Use `--` instead of `//` for comments.".to_owned(),
-        vec![Edit::replace(
-            token.start..token.start + slashes,
-            "-".repeat(slashes),
-        )],
+        vec![Edit::replace(token.start..token.start + slashes, dashes)],
     ))
 }
 
@@ -223,6 +234,17 @@ mod tests {
         expect_correction(READER, "/* a] */\n", "--[[ a] ]]\n");
         expect_correction(READER, "/*a]*/\n", "--[=[a]]=]\n");
         expect_correction(READER, "/**/\n", "--[[]]\n");
+    }
+
+    #[test]
+    fn lua_style_keeps_line_comments_before_long_brackets() {
+        expect_correction(
+            READER,
+            "local x = 1 //[[ note\nprint(x)\n//]]\n",
+            "local x = 1 -- [[ note\nprint(x)\n--]]\n",
+        );
+        expect_correction(READER, "//[==[ a\n", "-- [==[ a\n");
+        expect_correction(READER, "///[[ a\n//[ a\n", "---[[ a\n--[ a\n");
     }
 
     #[test]

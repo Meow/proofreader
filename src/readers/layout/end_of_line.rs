@@ -29,6 +29,10 @@ impl Reader for EndOfLine {
         vec![("EnforcedStyle", Yaml::String("lf".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["lf", "crlf"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         if ctx.option_str("EnforcedStyle", "lf") == "crlf" {
             check_crlf(ctx);
@@ -209,8 +213,6 @@ mod tests {
 
 #[cfg(test)]
 mod corpus {
-    use std::path::Path;
-
     use crate::config::Config;
     use crate::runner::{Options, inspect_source};
     use crate::source::Source;
@@ -218,9 +220,9 @@ mod corpus {
     /// Every reader together, with `EnforcedStyle: crlf`, corrects CRLF copies of the Flux
     /// corpus into CRLF files that need no further correction.
     #[test]
-    #[ignore = "reads the Flux corpus from /home/luna/code/flux-ce"]
+    #[ignore = "reads the Flux corpus from PROOFREADER_CORPUS (default /home/luna/code/flux-ce)"]
     fn crlf_corrections_converge_on_the_flux_corpus() {
-        let root = Path::new("/home/luna/code/flux-ce");
+        let root = &crate::testing::corpus_dir();
         let config = Config::from_yaml_str("Layout/EndOfLine:\n  EnforcedStyle: crlf\n", root)
             .expect("config");
         let lf = Config::from_yaml_str("", root).expect("config");

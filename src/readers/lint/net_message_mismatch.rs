@@ -109,12 +109,12 @@ impl Reader for NetMessageMismatch {
         let Ok(block) = parse(source) else {
             return;
         };
-        let file = FileNet::new(&block, source);
-        let sends = file.sends(&block);
+        let file = FileNet::new(block, source);
+        let sends = file.sends(block);
         if sends.is_empty() {
             return;
         }
-        for receive in file.receives(&block) {
+        for receive in file.receives(block) {
             for (range, message) in check(source, &receive, &sends) {
                 ctx.add_offense(range, message);
             }
@@ -1081,9 +1081,9 @@ mod tests {
     fn offenses_in(path: &str, src: &str) -> usize {
         let source = Source::new(path, src);
         let block = parse(&source).expect("parses");
-        let file = FileNet::new(&block, &source);
-        let sends = file.sends(&block);
-        file.receives(&block)
+        let file = FileNet::new(block, &source);
+        let sends = file.sends(block);
+        file.receives(block)
             .iter()
             .map(|receive| check(&source, receive, &sends).len())
             .sum()

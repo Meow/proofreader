@@ -25,6 +25,10 @@ impl Reader for InequalityOperator {
         vec![("EnforcedStyle", Yaml::String("bang".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["bang", "tilde"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let (wanted, unwanted) = if ctx.option_str("EnforcedStyle", "bang") == "tilde" {
             ("~=", "!=")

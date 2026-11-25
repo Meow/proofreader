@@ -34,7 +34,7 @@ impl Reader for SelfAssignment {
             source,
             found: Vec::new(),
         };
-        walk(&chunk, &mut finder);
+        walk(chunk, &mut finder);
         for target in finder.found {
             let text = source.text.get(target.range.clone()).unwrap_or_default();
             ctx.add_offense(

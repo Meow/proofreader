@@ -47,7 +47,7 @@ impl Reader for RedefinedLabel {
             scopes: Vec::new(),
             found: Vec::new(),
         };
-        checker.block(&chunk);
+        checker.block(chunk);
         for (token, message) in checker.found {
             ctx.add_offense(token.range(), message);
         }

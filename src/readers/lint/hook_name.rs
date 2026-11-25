@@ -64,7 +64,7 @@ impl Reader for HookName {
             functions,
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message) in finder.found {
             ctx.add_offense(range, message);
         }

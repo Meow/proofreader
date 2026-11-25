@@ -88,7 +88,7 @@ impl Reader for SqlInjection {
             loop_variables: HashSet::new(),
             named_functions: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         let unwritten = || {
             resolution
                 .variables

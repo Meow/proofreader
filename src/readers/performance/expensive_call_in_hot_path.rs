@@ -75,7 +75,7 @@ impl Reader for ExpensiveCallInHotPath {
         unsafe_functions.extend(ctx.option_str_list("ExtraUnsafeFunctions", &[]));
         unsafe_functions.extend(alternatives.iter().map(|(name, _)| name.clone()));
         unsafe_functions.retain(|name| !safe.contains(name));
-        for call in configured_hot_calls(ctx, &block) {
+        for call in configured_hot_calls(ctx, block) {
             if !unsafe_functions.contains(&call.function) {
                 continue;
             }

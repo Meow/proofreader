@@ -50,7 +50,7 @@ impl Reader for CompoundAssignment {
             source,
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (statement, operator, replacement) in finder.found {
             let message = format!(
                 "Use `{operator}=` instead of repeating `{}`.",

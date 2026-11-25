@@ -40,7 +40,7 @@ impl Reader for PowerOfTwo {
             enclosed: HashSet::new(),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message, replacement) in finder.found {
             if source.has_comment_in(&range) {
                 ctx.add_offense(range, message);

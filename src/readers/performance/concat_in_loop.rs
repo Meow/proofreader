@@ -48,7 +48,7 @@ impl Reader for ConcatInLoop {
             reported: HashSet::new(),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, target) in finder.found {
             ctx.add_offense(
                 range,

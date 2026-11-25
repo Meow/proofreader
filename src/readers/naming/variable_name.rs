@@ -4,7 +4,7 @@ use yaml_rust2::Yaml;
 
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::scopes::resolve;
-use crate::readers::naming::case::NamingStyle;
+use crate::readers::naming::case::{NAMING_STYLES, NamingStyle};
 use crate::readers::naming::declarations::{DeclarationKind, declarations};
 use crate::token::TokenKind;
 
@@ -30,6 +30,10 @@ impl Reader for VariableName {
 
     fn default_options(&self) -> Vec<(&'static str, Yaml)> {
         vec![("EnforcedStyle", Yaml::String("snake_case".to_owned()))]
+    }
+
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &NAMING_STYLES)]
     }
 
     fn investigate(&self, ctx: &mut Context) {

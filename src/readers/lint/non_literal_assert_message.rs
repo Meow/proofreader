@@ -34,7 +34,7 @@ impl Reader for NonLiteralAssertMessage {
             source,
             found: Vec::new(),
         };
-        walk(&block, &mut messages);
+        walk(block, &mut messages);
         for message in messages.found {
             if !cheap(message) {
                 ctx.add_offense(

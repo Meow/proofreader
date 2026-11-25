@@ -31,6 +31,10 @@ impl Reader for SpaceInsideBrackets {
         vec![("EnforcedStyle", Yaml::String("no_space".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["no_space", "space", "space_when_nested"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let style = ctx.option_str("EnforcedStyle", "no_space");

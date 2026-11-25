@@ -4,13 +4,37 @@
 //! Snippets are GLua (`test.lua`); the `_lumen` variants treat them as Lumen templates
 //! (`test.lumen`).
 
-use std::path::Path;
+use std::env;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::offense::Offense;
 use crate::reader::reader_named;
 use crate::runner::{Options, READER_ERROR, ReaderFilter, inspect_source};
 use crate::source::Source;
+
+/// The Flux corpus the ignored corpus tests read: `PROOFREADER_CORPUS`, by default
+/// `/home/luna/code/flux-ce`.
+pub fn corpus_dir() -> PathBuf {
+    env::var_os("PROOFREADER_CORPUS")
+        .map_or_else(|| PathBuf::from("/home/luna/code/flux-ce"), PathBuf::from)
+}
+
+/// The Helix corpus an ignored test reads: `PROOFREADER_HELIX`, by default
+/// `/home/luna/code/helix`.
+pub fn helix_dir() -> PathBuf {
+    env::var_os("PROOFREADER_HELIX")
+        .map_or_else(|| PathBuf::from("/home/luna/code/helix"), PathBuf::from)
+}
+
+/// The LuaJIT with the syntax extensions of LuaJIT 3.0 that the ignored tests of the rewriting
+/// readers run: `LUAJIT`, by default `/home/luna/code/nl/LuaJIT/src/luajit`.
+pub fn luajit() -> PathBuf {
+    env::var_os("LUAJIT").map_or_else(
+        || PathBuf::from("/home/luna/code/nl/LuaJIT/src/luajit"),
+        PathBuf::from,
+    )
+}
 
 /// Resolves a reader name, panicking with a helpful message when it is not registered.
 fn registered(reader: &str) -> &'static str {
@@ -71,6 +95,7 @@ fn run_with_config(
 ) -> (Vec<Offense>, Option<String>) {
     let options = Options {
         fix,
+        unsafe_fixes: true,
         filter: ReaderFilter::single(name),
         ..Options::default()
     };

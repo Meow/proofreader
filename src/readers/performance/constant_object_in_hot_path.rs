@@ -38,7 +38,7 @@ impl Reader for ConstantObjectInHotPath {
             return;
         };
         let functions = ctx.option_str_list("Functions", DEFAULT_FUNCTIONS);
-        for call in configured_hot_calls(ctx, &block) {
+        for call in configured_hot_calls(ctx, block) {
             if !functions.contains(&call.function)
                 || call.arguments.values.is_empty()
                 || !call.arguments.values.iter().all(is_constant)

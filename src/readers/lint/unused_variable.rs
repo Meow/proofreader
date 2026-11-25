@@ -25,9 +25,11 @@ use crate::token::Token;
 ///
 /// The fix removes an unused local together with every assignment to it: a statement declaring
 /// or assigning only that name is deleted (with its line when nothing else is on it, and with
-/// the doc comment of a removed function), and one declaring several names loses the name and
-/// its value. Only values without side effects are removed (literals, names, fields, tables,
-/// functions and operators over those); a local whose declaration or assignments hold a call
+/// the doc comment of a removed function unless that comment starts on the first line of the
+/// file or holds a file-level tag such as `@module`), and one declaring several names loses the
+/// name and its value. Removing code is an unsafe fix, which only `--fix-unsafe` applies; the
+/// prefix is a safe one. Only values without side effects are removed (literals, names, fields,
+/// tables, functions and operators over those); a local whose declaration or assignments hold a call
 /// (`local margin = SScaleMin(20 / 3)`) is prefixed with `_` instead, like parameters and loop
 /// variables, which cannot be removed. Prefixing renames the variable at the declaration, at
 /// every assignment and, for a parameter, in the matching `@param` tags of the doc comment right
@@ -57,7 +59,7 @@ impl Reader for UnusedVariable {
             return;
         };
         let tree = ast::parse(source).ok();
-        let bindings = tree.as_ref().map(bindings).unwrap_or_default();
+        let bindings = tree.map(bindings).unwrap_or_default();
         for variable in &resolution.variables {
             if variable.implicit
                 || variable.reads > 0
@@ -75,11 +77,17 @@ impl Reader for UnusedVariable {
                 DeclarationKind::Parameter | DeclarationKind::ForVariable => None,
             };
             let message = message(variable, removed.is_some());
-            let edits = removed.or_else(|| prefixing(source, &resolution, variable));
-            match edits {
-                Some(edits) => ctx.add_offense_with_fix(range, message, edits),
-                None => ctx.add_offense(range, message),
-            };
+            let offense = ctx.add_offense(range, message);
+            match removed {
+                Some(edits) => {
+                    offense.with_unsafe_fix(edits);
+                }
+                None => {
+                    if let Some(edits) = prefixing(source, &resolution, variable) {
+                        offense.with_fix(edits);
+                    }
+                }
+            }
         }
     }
 }
@@ -310,6 +318,11 @@ fn remove_statement(source: &Source, statement: &Statement, function: Option<&To
             doc.comments
                 .iter()
                 .any(|comment| source.text_of(comment).starts_with("---"))
+                && doc.comments[0].line > 1
+                && !doc
+                    .comments
+                    .iter()
+                    .any(|comment| has_file_tag(source.text_of(comment)))
         })
         .map_or(first_line, |doc| doc.comments[0].line);
     start = source.line_range(first_line).start;
@@ -321,6 +334,32 @@ fn remove_statement(source: &Source, statement: &Statement, function: Option<&To
         start = start.saturating_sub(1);
     }
     Edit::remove(start..end)
+}
+
+/// Tags that document a whole file (LDoc's `@module`, EmmyLua's `@meta`, ...), whose comment
+/// is never removed with a function.
+const FILE_TAGS: [&str; 10] = [
+    "module",
+    "classmod",
+    "submodule",
+    "script",
+    "file",
+    "author",
+    "copyright",
+    "license",
+    "release",
+    "meta",
+];
+
+/// Whether the comment `text` holds a tag of [`FILE_TAGS`].
+fn has_file_tag(text: &str) -> bool {
+    text.split('@').skip(1).any(|rest| {
+        let tag: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        FILE_TAGS.contains(&tag.as_str())
+    })
 }
 
 /// The edits prefixing `variable` with `_`, or `None` when the prefixed name already appears in
@@ -753,6 +792,34 @@ mod tests {
             "-- Not a doc comment.\nlocal f = function()\nend\nreturn 1\n",
             "-- Not a doc comment.\nreturn 1\n",
         );
+    }
+
+    #[test]
+    fn keeps_file_level_doc_comments() {
+        expect_correction(
+            READER,
+            "--- @module helpers\n-- Shared helpers.\nlocal function helper(a)\n  return a\nend\n",
+            "--- @module helpers\n-- Shared helpers.\n",
+        );
+        expect_correction(
+            READER,
+            "-- Helpers.\n\n--- Does things.\n-- @author luna\nlocal function helper()\nend\n\nreturn 1\n",
+            "-- Helpers.\n\n--- Does things.\n-- @author luna\n\nreturn 1\n",
+        );
+        expect_correction(
+            READER,
+            "--- Does things.\nlocal function helper()\nend\n\nreturn 1\n",
+            "--- Does things.\n\nreturn 1\n",
+        );
+    }
+
+    #[test]
+    fn removing_code_is_an_unsafe_fix() {
+        let offenses = inspect(READER, "local function helper() end\nlocal x = f()\n");
+        assert!(offenses[0].correctable() && offenses[0].unsafe_fix);
+        assert!(offenses[1].correctable() && !offenses[1].unsafe_fix);
+        let offenses = inspect(READER, "function M.f(a) end\n");
+        assert!(offenses[0].correctable() && !offenses[0].unsafe_fix);
     }
 
     #[test]

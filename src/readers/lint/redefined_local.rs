@@ -97,7 +97,7 @@ fn panel_registrations(source: &Source, resolution: &Resolution) -> Vec<(usize, 
         resolution,
         found: Vec::new(),
     };
-    walk(&block, &mut finder);
+    walk(block, &mut finder);
     finder.found
 }
 

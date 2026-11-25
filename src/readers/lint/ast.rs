@@ -14,6 +14,7 @@
 //! statement of its block, a call or an assignment is the only expression that can stand as a
 //! statement, and only names, fields and indexes can be assigned to.
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use crate::lumen::opens_splice;
@@ -438,8 +439,43 @@ pub struct ParseError {
     pub too_deep: bool,
 }
 
+thread_local! {
+    /// The earliest offset where a parse on this thread gave up because the code nests too
+    /// deeply, since [`take_too_deep`] last took it.
+    static TOO_DEEP: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// Records that a parse gave up at byte `offset` because the code nests too deeply.
+pub(crate) fn note_too_deep(offset: usize) {
+    TOO_DEEP.with(|deepest| {
+        deepest.set(Some(
+            deepest.get().map_or(offset, |earlier| earlier.min(offset)),
+        ));
+    });
+}
+
+/// The earliest offset where a parse ([`parse`] or [`super::scopes::resolve`]) on this thread
+/// gave up because the code nests too deeply since the last call, which clears it.
+pub fn take_too_deep() -> Option<usize> {
+    TOO_DEEP.with(Cell::take)
+}
+
+/// The block of the statements of `source`. The tree is built once per [`Source`] and shared
+/// by every reader that asks for it.
+pub fn parse(source: &Source) -> Result<&Block, ParseError> {
+    match source.syntax_tree(|| build(source)) {
+        Ok(block) => Ok(block),
+        Err(error) => {
+            if error.too_deep {
+                note_too_deep(error.range.start);
+            }
+            Err(error.clone())
+        }
+    }
+}
+
 /// Parses `source` into the block of its statements.
-pub fn parse(source: &Source) -> Result<Block, ParseError> {
+fn build(source: &Source) -> Result<Block, ParseError> {
     let tokens: Vec<Token> = significant_tokens(source)
         .into_iter()
         .filter(|token| !(token.kind == TokenKind::Unknown && source.text_of(token) == BOM))
@@ -933,6 +969,7 @@ impl Parser<'_> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             let start = self.here();
+            note_too_deep(start);
             return Err(ParseError {
                 range: start..start,
                 message: "The code nests too deeply to be inspected.".to_owned(),
@@ -1373,28 +1410,44 @@ impl Parser<'_> {
         self.ternary(Box::new(condition))
     }
 
-    /// Parses the `? consequent : alternative` after `condition`.
+    /// Parses the `? consequent : alternative` after `condition`. A chain of ternaries in
+    /// alternatives (`a ? b : c ? d : e`) is read in a loop and grouped to the right afterwards,
+    /// so that only real nesting counts towards the depth limit.
     #[inline(never)]
     fn ternary(&mut self, condition: Box<Expression>) -> Parse<Expression> {
-        let question = self.bump()?;
-        self.descend()?;
-        let consequent = Box::new(self.expression()?);
-        let colon = self.expect(TokenKind::TernaryColon, "`:` of the ternary")?;
-        let alternative = Box::new(self.expression()?);
-        self.ascend();
-        Ok(Expression {
-            range: condition.range.start..alternative.range.end,
-            kind: ExpressionKind::Ternary {
-                condition,
-                question,
-                consequent,
-                colon,
-                alternative,
-            },
-        })
+        let mut links = Vec::new();
+        let mut condition = condition;
+        let mut alternative = loop {
+            let question = self.bump()?;
+            self.descend()?;
+            let consequent = Box::new(self.expression()?);
+            self.ascend();
+            let colon = self.expect(TokenKind::TernaryColon, "`:` of the ternary")?;
+            let next = self.binary_expression(0)?;
+            links.push((condition, question, consequent, colon));
+            if !self.check(TokenKind::Question) {
+                break next;
+            }
+            condition = Box::new(next);
+        };
+        while let Some((condition, question, consequent, colon)) = links.pop() {
+            alternative = Expression {
+                range: condition.range.start..alternative.range.end,
+                kind: ExpressionKind::Ternary {
+                    condition,
+                    question,
+                    consequent,
+                    colon,
+                    alternative: Box::new(alternative),
+                },
+            };
+        }
+        Ok(alternative)
     }
 
-    /// Parses an expression whose binary operators bind tighter than `limit`.
+    /// Parses an expression whose binary operators bind tighter than `limit`. A chain of a
+    /// right-associative operator (`a .. b .. c`, `a ^ b ^ c`) is read in a loop and grouped to
+    /// the right afterwards, so that only real nesting counts towards the depth limit.
     fn binary_expression(&mut self, limit: u8) -> Parse<Expression> {
         self.descend()?;
         let mut left = match self.current() {
@@ -1419,18 +1472,56 @@ impl Parser<'_> {
                 break;
             }
             self.bump()?;
-            let right = self.binary_expression(right_power)?;
-            left = Expression {
+            left = self.binary_operation(left, operator, (left_power, right_power))?;
+        }
+        self.ascend();
+        Ok(left)
+    }
+
+    /// Parses what follows the binary `operator` (already consumed) of binding powers `powers`
+    /// after `left`: its right operand, or for a right-associative operator the operands of the
+    /// whole chain, grouped to the right.
+    #[inline(never)]
+    fn binary_operation(
+        &mut self,
+        left: Expression,
+        operator: Token,
+        powers: (u8, u8),
+    ) -> Parse<Expression> {
+        if powers.1 >= powers.0 {
+            let right = self.binary_expression(powers.1)?;
+            return Ok(Expression {
                 range: left.range.start..right.range.end,
                 kind: ExpressionKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
+            });
+        }
+        let mut operands = vec![left];
+        let mut operators = vec![operator];
+        loop {
+            operands.push(self.binary_expression(powers.0)?);
+            match self.current() {
+                Some(next) if binary_precedence(next.kind) == Some(powers) => {
+                    operators.push(self.bump()?);
+                }
+                _ => break,
+            }
+        }
+        let mut right = operands.pop().ok_or_else(|| self.error("an expression"))?;
+        while let (Some(operator), Some(operand)) = (operators.pop(), operands.pop()) {
+            right = Expression {
+                range: operand.range.start..right.range.end,
+                kind: ExpressionKind::Binary {
+                    operator,
+                    left: Box::new(operand),
+                    right: Box::new(right),
+                },
             };
         }
-        self.ascend();
-        Ok(left)
+        Ok(right)
     }
 
     /// Wraps `kind` into an expression starting at `start` and ending with the previous token.
@@ -1632,12 +1723,27 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses the arguments of a call: `(...)`, a table or a string.
+    /// Parses the arguments of a call: `(...)`, a table or a string. A `(` on a later line than
+    /// the token before it is rejected, as LuaJIT rejects it: it could as well start a new
+    /// statement.
     fn call_arguments(&mut self) -> Parse<Arguments> {
         let start = self.here();
         let (style, values) = match self.peek() {
             Some(TokenKind::LParen) => {
-                self.bump()?;
+                let open = self.bump()?;
+                let previous = self
+                    .pos
+                    .checked_sub(2)
+                    .and_then(|index| self.tokens.get(index));
+                if previous.is_some_and(|previous| previous.end_line != open.line) {
+                    return Err(ParseError {
+                        range: open.range(),
+                        message: "Ambiguous syntax (function call x new statement): a `(` \
+                                  starting a line calls the expression before it."
+                            .to_owned(),
+                        too_deep: false,
+                    });
+                }
                 let values = if self.check(TokenKind::RParen) {
                     Vec::new()
                 } else {
@@ -1720,7 +1826,9 @@ mod tests {
     use super::*;
 
     fn parsed(src: &str) -> Block {
-        parse(&Source::new("t.lua", src)).unwrap_or_else(|error| panic!("{src:?}: {error:?}"))
+        parse(&Source::new("t.lua", src))
+            .unwrap_or_else(|error| panic!("{src:?}: {error:?}"))
+            .clone()
     }
 
     fn error(src: &str) -> (u32, u32, String) {
@@ -1838,6 +1946,27 @@ mod tests {
         );
         assert_eq!(value_shape("x = ~a & ~~b\n"), "((~a) & (~(~b)))");
         assert_eq!(value_shape("x = 5 & 3 == 1\n"), "((5 & 3) == 1)");
+    }
+
+    #[test]
+    fn right_associative_chains_count_as_one_level() {
+        assert_eq!(value_shape("x = a .. b .. c\n"), "(a .. (b .. c))");
+        assert_eq!(
+            value_shape("x = a ^ b ^ -c ^ d\n"),
+            "(a ^ (b ^ (-(c ^ d))))"
+        );
+        assert_eq!(
+            value_shape("x = a .. b + c .. d ^ e ^ f .. g\n"),
+            "(a .. ((b + c) .. ((d ^ (e ^ f)) .. g)))"
+        );
+        for operator in ["..", "^"] {
+            let chain = vec!["a"; 500].join(&format!(" {operator} "));
+            let source = Source::new("t.lua", format!("x = {chain}\n"));
+            assert!(parse(&source).is_ok(), "{operator}");
+            assert_eq!(take_too_deep(), None);
+        }
+        let ternaries = format!("x = {}0\n", "c ? 1 : ".repeat(500));
+        assert!(parse(&Source::new("t.lua", ternaries)).is_ok());
     }
 
     #[test]
@@ -2288,10 +2417,25 @@ mod tests {
     }
 
     #[test]
+    fn a_call_whose_parenthesis_starts_a_line_is_ambiguous() {
+        let message = "Ambiguous syntax (function call x new statement): a `(` starting a line \
+                       calls the expression before it.";
+        assert_eq!(
+            error("local f = print\n(f or print)('x')\n"),
+            (2, 1, message.to_owned())
+        );
+        assert_eq!(error("obj:method\n  (1)\n").0, 2);
+        assert_eq!(statements("local f = print;\n(f or print)('x')\n").len(), 3);
+        assert_eq!(statements("f(\n1\n)\ng [[\n]] (2)\n").len(), 2);
+    }
+
+    #[test]
     fn deep_nesting_is_not_malformed() {
         let deep = format!("x = {}1{}\n", "(".repeat(500), ")".repeat(500));
         let error = parse(&Source::new("t.lua", deep)).expect_err("too deep");
         assert!(error.too_deep);
+        assert_eq!(take_too_deep(), Some(error.range.start));
+        assert_eq!(take_too_deep(), None);
     }
 
     #[test]
@@ -2308,7 +2452,7 @@ mod tests {
             }
         }
         let mut splices = Splices(0);
-        walk(&block, &mut splices);
+        walk(block, &mut splices);
         assert_eq!(splices.0, 3);
     }
 

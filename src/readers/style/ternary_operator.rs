@@ -41,10 +41,10 @@ impl Reader for TernaryOperator {
         };
         let mut finder = Finder {
             source,
-            placements: placements(&block),
+            placements: placements(block),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, edits) in finder.found {
             let message = "Use the ternary `c ? a : b` instead of `c and a or b`.";
             if source.has_comment_in(&range) {

@@ -8,6 +8,7 @@ use yaml_rust2::yaml::Hash;
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration, yaml_strings};
 use crate::readers::lint::ast::{Expression, ExpressionKind, Visitor, parse, walk};
+use crate::readers::lint::scopes::{Resolution, resolve};
 use crate::source::Source;
 use crate::token::TokenKind;
 
@@ -35,8 +36,8 @@ const MAX_SQUARED_LITERAL: usize = 24;
 /// The fix squares the call and the bound: a numeric literal becomes its square (`10000`), a
 /// name or field is multiplied by itself (`range * range`), anything else is raised to the
 /// second power (`f() ^ 2`, `(a + b) ^ 2`); a negated literal bound is not corrected. Both
-/// sides of a comparison of two square roots are squared together. Files that do not parse
-/// are skipped.
+/// sides of a comparison of two square roots are squared together. A function whose root name
+/// is a local there (`math` as a parameter) is left alone. Files that do not parse are skipped.
 pub struct DistanceComparison;
 
 impl Reader for DistanceComparison {
@@ -64,16 +65,17 @@ impl Reader for DistanceComparison {
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
-        let Ok(block) = parse(source) else {
+        let (Ok(block), Some(resolution)) = (parse(source), resolve(source)) else {
             return;
         };
         let mut finder = Finder {
             source,
+            resolution: &resolution,
             methods: ctx.option_str_map("Methods"),
             functions: ctx.option_str_list("Functions", DEFAULT_FUNCTIONS),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message, fix) in finder.found {
             match fix {
                 Some(edits) => ctx.add_offense_with_fix(range, message, edits),
@@ -97,6 +99,7 @@ struct Root<'t> {
 /// Collects the square roots standing as operands of comparisons.
 struct Finder<'a> {
     source: &'a Source,
+    resolution: &'a Resolution<'a>,
     methods: Vec<(String, String)>,
     functions: Vec<String>,
     found: Vec<(Range<usize>, String, Option<Vec<Edit>>)>,
@@ -118,7 +121,10 @@ impl<'t> Finder<'_> {
             }
             ExpressionKind::Call { .. } => {
                 let (function, arguments) = operand.as_call(self.source)?;
-                if !self.functions.contains(&function) || arguments.values.len() != 1 {
+                if !self.functions.contains(&function)
+                    || arguments.values.len() != 1
+                    || !self.resolution.is_global_at(operand.range.start)
+                {
                     return None;
                 }
                 Some(Root {
@@ -337,6 +343,7 @@ mod tests {
         );
         expect_no_offenses(READER, "if pos.Distance < 1 then end\n");
         expect_no_offenses(READER, "if math.sqrt(a, b) < 1 then end\n");
+        expect_no_offenses(READER, "function a(math)\n  return math.sqrt(4) < 2\nend\n");
     }
 
     #[test]

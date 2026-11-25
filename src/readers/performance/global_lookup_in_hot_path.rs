@@ -67,7 +67,7 @@ impl Reader for GlobalLookupInHotPath {
         let libraries = ctx.option_str_list("Libraries", DEFAULT_LIBRARIES);
         let min_uses = ctx.option_usize("MinUses", DEFAULT_MIN_USES).max(1);
         let mut found = Vec::new();
-        for hot in configured_hot_functions(ctx, &block) {
+        for hot in configured_hot_functions(ctx, block) {
             let mut lookups = Lookups {
                 source,
                 resolution: &resolution,
@@ -128,10 +128,7 @@ impl<'t> Visitor<'t> for Lookups<'_> {
             || self
                 .assigned
                 .contains(&(expression.range.start, expression.range.end))
-            || self
-                .resolution
-                .reference_at(library.start)
-                .is_none_or(|reference| reference.variable.is_some())
+            || !self.resolution.is_global_at(library.start)
         {
             return;
         }

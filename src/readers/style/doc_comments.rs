@@ -312,7 +312,7 @@ mod tests {
     fn params(src: &str) -> Vec<String> {
         let source = Source::new("t.lua", src);
         let block = parse(&source).expect("parses");
-        let found = functions(&source, &block);
+        let found = functions(&source, block);
         found[0]
             .doc
             .as_ref()
@@ -350,7 +350,7 @@ mod tests {
         let src = "-- @param a [Number]\nf(function() end, function(a) end)\n";
         let source = Source::new("t.lua", src);
         let block = parse(&source).expect("parses");
-        let found = functions(&source, &block);
+        let found = functions(&source, block);
         assert!(found[0].doc.is_some());
         assert!(found[1].doc.is_none());
     }
@@ -368,7 +368,7 @@ mod tests {
                    f.g = function() end\nh(function() end)\n";
         let source = Source::new("t.lua", src);
         let block = parse(&source).expect("parses");
-        let names: Vec<(Option<String>, bool)> = functions(&source, &block)
+        let names: Vec<(Option<String>, bool)> = functions(&source, block)
             .into_iter()
             .map(|function| (function.name, function.method))
             .collect();
@@ -391,7 +391,7 @@ mod tests {
                    const function g() end\nh(|| -> 1)\n";
         let source = Source::new("t.lua", src);
         let block = parse(&source).expect("parses");
-        let found: Vec<(Option<String>, bool, Vec<&str>)> = functions(&source, &block)
+        let found: Vec<(Option<String>, bool, Vec<&str>)> = functions(&source, block)
             .into_iter()
             .map(|function| {
                 let params = function

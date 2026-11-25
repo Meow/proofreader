@@ -483,9 +483,9 @@ mod tests {
         }
         let source = Source::new("t.lua", src);
         let block = parse(&source).expect("parses");
-        let found = placements(&block);
+        let found = placements(block);
         let mut names = Names(Vec::new());
-        walk(&block, &mut names);
+        walk(block, &mut names);
         names
             .0
             .into_iter()

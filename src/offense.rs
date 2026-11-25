@@ -6,6 +6,9 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
+/// The most characters of its line an offense keeps for display, in [`Offense::source_line`].
+pub const EXCERPT_CHARS: usize = 300;
+
 /// How serious an offense is, from least to most severe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
@@ -125,14 +128,24 @@ pub struct Offense {
     pub line: u32,
     /// 1-based byte column of the start of the range.
     pub col: u32,
+    /// 1-based character (Unicode code point) column of the start of the range.
+    pub char_col: u32,
     /// 1-based line of the last byte of the range.
     pub last_line: u32,
     /// 1-based byte column of the last byte of the range.
     pub last_col: u32,
-    /// Text of the line holding the start of the range, at detection time.
+    /// 1-based character column of the last character of the range.
+    pub last_char_col: u32,
+    /// Text of the line holding the start of the range, at detection time; a line of more than
+    /// [`EXCERPT_CHARS`] characters is cut to that many around the start of the range.
     pub source_line: String,
+    /// Byte offset in its line where [`Offense::source_line`] starts: 0 unless the line was cut.
+    pub excerpt_start: u32,
     /// Edits that fix the offense, when the reader can correct it.
     pub fix: Option<Vec<Edit>>,
+    /// Whether the fix may change what the code does (deleting a statement, say), so that only
+    /// `--fix-unsafe` applies it.
+    pub unsafe_fix: bool,
     /// Whether the fix was applied.
     pub corrected: bool,
 }
@@ -151,6 +164,14 @@ impl Offense {
     /// Attaches a fix to the offense.
     pub fn with_fix(&mut self, edits: Vec<Edit>) -> &mut Self {
         self.fix = Some(edits);
+        self.unsafe_fix = false;
+        self
+    }
+
+    /// Attaches a fix that may change what the code does, which only `--fix-unsafe` applies.
+    pub fn with_unsafe_fix(&mut self, edits: Vec<Edit>) -> &mut Self {
+        self.fix = Some(edits);
+        self.unsafe_fix = true;
         self
     }
 }

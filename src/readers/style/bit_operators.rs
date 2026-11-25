@@ -86,10 +86,10 @@ impl Reader for BitOperators {
         let mut finder = Finder {
             source,
             resolution: &resolution,
-            placements: placements(&block),
+            placements: placements(block),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for found in finder.found {
             let message = format!(
                 "Use `{}` instead of `bit.{}`.",
@@ -145,10 +145,7 @@ impl<'t> Visitor<'t> for Finder<'_> {
         else {
             return;
         };
-        let global = self
-            .resolution
-            .reference_at(library.start)
-            .is_some_and(|reference| reference.variable.is_none());
+        let global = self.resolution.is_global_at(library.start);
         let values = &arguments.values;
         if source.text_of(library) != "bit" || !global || !arity.accepts(values.len()) {
             return;

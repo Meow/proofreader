@@ -39,6 +39,13 @@ impl Reader for CallParentheses {
         vec![("EnforcedStyle", Yaml::String("always".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![(
+            "EnforcedStyle",
+            &["always", "omit", "omit_for_strings", "omit_for_tables"],
+        )]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let style = ctx.option_str("EnforcedStyle", "always");
@@ -52,7 +59,7 @@ impl Reader for CallParentheses {
             return;
         };
         let mut calls = Calls(Vec::new());
-        walk(&block, &mut calls);
+        walk(block, &mut calls);
         for (callee_end, arguments) in calls.0 {
             match arguments.style {
                 ArgumentStyle::Parenthesized => {

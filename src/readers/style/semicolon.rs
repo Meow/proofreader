@@ -16,6 +16,7 @@ use crate::token::TokenKind;
 /// A semicolon ending a statement is removed together with the spaces around it; one that
 /// separates two statements on a line becomes a single space, except before `(`, where removing
 /// it would turn the next statement into a call and the offense is left uncorrected. A
+/// semicolon followed by a `(` on a later line keeps its offense uncorrected too. A
 /// semicolon separating table fields becomes a comma. Table separators are found with the syntax
 /// tree, so a statement semicolon in a function inside a table stays a statement semicolon; in a
 /// file that does not parse, a semicolon directly inside braces is taken as a table separator.
@@ -43,13 +44,17 @@ impl Reader for Semicolon {
         vec![("EnforcedStyle", Yaml::String("omit".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["omit", "require"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let separators = table_separators(source);
         let require = ctx.option_str("EnforcedStyle", "omit") == "require";
         let terminators = if require {
             match parse(source) {
-                Ok(block) => Some(check_required(ctx, source, &block)),
+                Ok(block) => Some(check_required(ctx, source, block)),
                 Err(_) => None,
             }
         } else {
@@ -178,16 +183,22 @@ fn table_separators(source: &Source) -> Option<Vec<usize>> {
     }
     let block = parse(source).ok()?;
     let mut separators = Separators(Vec::new());
-    walk(&block, &mut separators);
+    walk(block, &mut separators);
     separators.0.sort_unstable();
     Some(separators.0)
 }
 
 /// The edit removing the statement semicolon at `source.tokens[index]`, or `None` when the
-/// next statement starts with `(`.
+/// next statement starts with `(`, on the same line or a later one.
 fn statement_fix(source: &Source, index: usize) -> Option<Edit> {
     let tokens = &source.tokens;
     let semicolon = &tokens[index];
+    let next_code = tokens[index + 1..]
+        .iter()
+        .find(|token| !token.is_trivia() && !token.kind.is_comment());
+    if next_code.is_some_and(|token| token.kind == TokenKind::LParen) {
+        return None;
+    }
     let is_space = |kind: TokenKind| matches!(kind, TokenKind::Space | TokenKind::Tab);
     let spaces_before = tokens[..index]
         .iter()
@@ -355,6 +366,14 @@ mod tests {
         assert_eq!(offenses.len(), 1);
         assert!(!offenses[0].correctable());
         expect_correction(READER, "a = b; (f or g)()\n", "a = b; (f or g)()\n");
+        for src in [
+            "local f = print;\n(f or print)('x')\n",
+            "local f = print; -- note\n\n  (f)('x')\n",
+        ] {
+            assert!(!inspect(READER, src)[0].correctable(), "{src:?}");
+            expect_correction(READER, src, src);
+        }
+        expect_correction(READER, "a = b;\nc = (d)\n", "a = b\nc = (d)\n");
     }
 
     #[test]

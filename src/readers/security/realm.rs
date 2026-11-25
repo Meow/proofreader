@@ -416,7 +416,7 @@ mod tests {
     fn handler_lines(path: &str, src: &str, registrar: &str) -> Vec<u32> {
         let source = Source::new(path, src);
         let block = parse(&source).expect("parses");
-        server_handlers(&block, &source, registrar)
+        server_handlers(block, &source, registrar)
             .iter()
             .map(|handler| source.position(handler.function.keyword.start).0)
             .collect()
@@ -492,7 +492,7 @@ mod tests {
     fn registered_names() {
         let source = Source::new("sv_a.lua", "concommand.Add('x', function() end)\n");
         let block = parse(&source).expect("parses");
-        let handlers = server_handlers(&block, &source, "concommand.Add");
+        let handlers = server_handlers(block, &source, "concommand.Add");
         assert_eq!(handlers[0].name(&source), Some("x"));
     }
 }

@@ -28,6 +28,10 @@ impl Reader for SpaceBeforeAnonymousFunctionParen {
         vec![("EnforcedStyle", Yaml::String("no_space".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["no_space", "space"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let spaced = ctx.option_str("EnforcedStyle", "no_space") == "space";

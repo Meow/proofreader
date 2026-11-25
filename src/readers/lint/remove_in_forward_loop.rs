@@ -43,7 +43,7 @@ impl Reader for RemoveInForwardLoop {
             return;
         };
         let mut collector = Collector::default();
-        walk(&block, &mut collector);
+        walk(block, &mut collector);
         let checker = Checker {
             source,
             resolution: &resolution,

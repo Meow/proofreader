@@ -10,6 +10,7 @@ use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::ast::{
     ArgumentStyle, Expression, Statement, StatementKind, Visitor, parse, walk,
 };
+use crate::readers::lint::scopes::{Resolution, resolve};
 use crate::source::Source;
 
 /// The functions building a fresh table of everything, and the iterators over a cached one.
@@ -22,7 +23,8 @@ const DEFAULT_ITERATORS: &[(&str, &str)] = &[
 /// (`for _, ply in ipairs(player.GetAll()) do`, `pairs(...)` or `next, player.GetAll()`), when the
 /// table is used for nothing else: the matching iterator (`player.Iterator()`) walks a cached
 /// table instead of building a new one on every call. The fix replaces the loop's iterator
-/// expressions, unless a comment lies among them. Files that do not parse are skipped.
+/// expressions, unless a comment lies among them. Loops where `ipairs`, `pairs`, `next` or the
+/// library (`player`) is a local are left alone. Files that do not parse are skipped.
 pub struct GetAllLoop;
 
 impl Reader for GetAllLoop {
@@ -47,15 +49,16 @@ impl Reader for GetAllLoop {
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
-        let Ok(block) = parse(source) else {
+        let (Ok(block), Some(resolution)) = (parse(source), resolve(source)) else {
             return;
         };
         let mut finder = Finder {
             source,
+            resolution: &resolution,
             iterators: ctx.option_str_map("Iterators"),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message, replacement) in finder.found {
             if source.has_comment_in(&range) {
                 ctx.add_offense(range, message);
@@ -73,6 +76,7 @@ impl Reader for GetAllLoop {
 /// Collects the loops over a table that an iterator could walk instead.
 struct Finder<'a> {
     source: &'a Source,
+    resolution: &'a Resolution<'a>,
     iterators: Vec<(String, String)>,
     found: Vec<(Range<usize>, String, String)>,
 }
@@ -83,7 +87,11 @@ impl Finder<'_> {
     fn walked<'t>(&self, values: &'t [Expression]) -> Option<(&'static str, &'t Expression)> {
         match values {
             [call] => {
-                let (function, arguments) = call.unparenthesized().as_call(self.source)?;
+                let call = call.unparenthesized();
+                let (function, arguments) = call.as_call(self.source)?;
+                if !self.resolution.is_global_at(call.range.start) {
+                    return None;
+                }
                 let walker = match function.as_str() {
                     "ipairs" => "ipairs",
                     "pairs" => "pairs",
@@ -94,8 +102,9 @@ impl Finder<'_> {
                     _ => None,
                 }
             }
-            [next, table] => (next.dotted_name(self.source).as_deref() == Some("next"))
-                .then_some(("next", table)),
+            [next, table] => (next.dotted_name(self.source).as_deref() == Some("next")
+                && self.resolution.is_global_at(next.range.start))
+            .then_some(("next", table)),
             _ => None,
         }
     }
@@ -103,8 +112,12 @@ impl Finder<'_> {
     /// The function and its iterator when `table` is a call without arguments of a function in
     /// `Iterators`.
     fn iterator(&self, table: &Expression) -> Option<(&str, &str)> {
-        let (function, arguments) = table.unparenthesized().as_call(self.source)?;
-        if arguments.style != ArgumentStyle::Parenthesized || !arguments.values.is_empty() {
+        let call = table.unparenthesized();
+        let (function, arguments) = call.as_call(self.source)?;
+        if arguments.style != ArgumentStyle::Parenthesized
+            || !arguments.values.is_empty()
+            || !self.resolution.is_global_at(call.range.start)
+        {
             return None;
         }
         self.iterators
@@ -204,6 +217,16 @@ mod tests {
              for _, p in next, player.GetAll(), nil do end\n\
              for i = 1, #player.GetAll() do end\n\
              for _, p in player.Iterator() do end\nprint(#player.GetAll())\n",
+        );
+    }
+
+    #[test]
+    fn ignores_locals_named_like_the_libraries() {
+        expect_no_offenses(
+            READER,
+            "function a(player, ents, pairs)\n  for _, p in ipairs(player.GetAll()) do end\n  \
+             for _, e in ipairs(ents.GetAll()) do end\n  for _, e in pairs(_G.ents.GetAll()) do end\n\
+             end\nlocal next = f\nfor _, p in next, player.GetAll() do end\n",
         );
     }
 

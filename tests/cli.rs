@@ -133,8 +133,8 @@ fn json_format() {
     assert!(json.contains(
         "{\"severity\":\"convention\",\"message\":\"Trailing whitespace detected.\",\
          \"reader_name\":\"Layout/TrailingWhitespace\",\"corrected\":false,\"correctable\":true,\
-         \"location\":{\"start_line\":1,\"start_column\":12,\"last_line\":1,\"last_column\":13,\
-         \"length\":2,\"line\":1,\"column\":12}}"
+         \"unsafe_correction\":false,\"location\":{\"start_line\":1,\"start_column\":12,\"last_line\":1,\
+         \"last_column\":13,\"length\":2,\"line\":1,\"column\":12,\"byte_column\":12}}"
     ));
     assert!(json.contains(
         "\"summary\":{\"offense_count\":4,\"target_file_count\":2,\"inspected_file_count\":2,\
@@ -368,8 +368,174 @@ fn usage_and_io_errors_exit_with_two() {
     assert!(stderr(&unknown).contains("unrecognized reader or department: Style/Nope"));
     let bad_flag = proofreader(&fixtures(), &["--frobnicate"]);
     assert_eq!(bad_flag.status.code(), Some(2));
-    let diff_without_fix = proofreader(&fixtures(), &["--diff"]);
-    assert_eq!(diff_without_fix.status.code(), Some(2));
+    let typo = proofreader(&fixtures(), &["--show-readers", "Style/Nott"]);
+    assert_eq!(typo.status.code(), Some(2));
+    assert!(stderr(&typo).contains("Style/Nott; did you mean Style/Not?"));
+}
+
+#[test]
+fn diff_alone_is_a_dry_run() {
+    let dir = scratch("dry-run");
+    let file = copy_fixture("offenses.lua", &dir);
+    let original = fs::read_to_string(&file).expect("file");
+    let output = proofreader(&dir, &["--diff", "--only", "Layout/TrailingWhitespace"]);
+    assert!(
+        stdout(&output).contains("-local a = 1  \n-local b = 2\t\n+local a = 1\n+local b = 2\n")
+    );
+    assert_eq!(fs::read_to_string(&file).expect("file"), original);
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn unsafe_corrections_need_fix_unsafe() {
+    let dir = scratch("unsafe");
+    let file = dir.join("a.lua");
+    let text = "--- @module helpers\nlocal function helper(a)\n  return a\nend\n";
+    fs::write(&file, text).expect("write");
+    let safe = proofreader(
+        &dir,
+        &["--fix", "-f", "quiet", "--only", "Lint/UnusedVariable"],
+    );
+    assert_eq!(safe.status.code(), Some(1));
+    assert!(stdout(&safe).contains("[Unsafe Correctable] Lint/UnusedVariable"));
+    assert_eq!(fs::read_to_string(&file).expect("file"), text);
+    let all = proofreader(
+        &dir,
+        &["-A", "-f", "quiet", "--only", "Lint/UnusedVariable"],
+    );
+    assert_eq!(all.status.code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(&file).expect("file"),
+        "--- @module helpers\n"
+    );
+}
+
+#[test]
+fn force_exclusion_skips_excluded_files_given_explicitly() {
+    let dir = scratch("exclusion");
+    fs::create_dir_all(dir.join("vendor")).expect("dir");
+    fs::write(
+        dir.join(".proofreader.yml"),
+        "AllReaders:\n  Exclude: ['vendor/**']\n",
+    )
+    .expect("write");
+    fs::write(dir.join("vendor/x.lua"), "x = 1   \n").expect("write");
+    let explicit = proofreader(&dir, &["-f", "quiet", "vendor/x.lua"]);
+    assert_eq!(explicit.status.code(), Some(1));
+    let forced = proofreader(&dir, &["-f", "quiet", "--force-exclusion", "vendor/x.lua"]);
+    assert_eq!(forced.status.code(), Some(0));
+    assert_eq!(stdout(&forced), "");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_proofreader"))
+        .args(["--stdin", "vendor/x.lua", "--fix", "--force-exclusion"])
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), b"x = 1   \n")
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("output");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "x = 1   \n");
+}
+
+#[test]
+fn init_writes_a_style_once() {
+    let dir = scratch("init");
+    let output = proofreader(&dir, &["--init", "--style", "gmod"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Wrote .proofreader.yml (gmod style)\n");
+    let written = fs::read_to_string(dir.join(".proofreader.yml")).expect("written");
+    assert!(written.ends_with(include_str!("../examples/gmod/.proofreader.yml")));
+    let again = proofreader(&dir, &["--init"]);
+    assert_eq!(again.status.code(), Some(2));
+    assert!(stderr(&again).contains(".proofreader.yml already exists"));
+    let defaults = scratch("init-defaults");
+    assert_eq!(proofreader(&defaults, &["--init"]).status.code(), Some(0));
+    assert_eq!(
+        fs::read_to_string(defaults.join(".proofreader.yml")).expect("written"),
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/.proofreader.yml"))
+            .expect("example")
+    );
+}
+
+#[test]
+fn show_config_names_the_configuration_in_effect() {
+    let dir = scratch("show-config");
+    fs::write(dir.join("base.yml"), "Layout/LineLength:\n  Max: 90\n").expect("write");
+    fs::write(
+        dir.join(".proofreader.yml"),
+        "inherit_from: base.yml\nAllReaders:\n  Exclude: ['vendor/**']\n",
+    )
+    .expect("write");
+    let output = proofreader(&dir, &["--show-config", "a.lua"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output);
+    assert!(text.starts_with(&format!(
+        "# Configuration of a.lua: {}\n# Inherits from: {}\n\nAllReaders:\n  \
+         Include: ['**/*.lua', '**/*.lumen']\n  Exclude: ['vendor/**']\n",
+        dir.join(".proofreader.yml").display(),
+        dir.join("base.yml").display()
+    )));
+    assert!(text.contains("Layout/LineLength:\n"));
+    assert!(text.contains("  Max: 90\n"));
+}
+
+#[test]
+fn strict_turns_configuration_warnings_into_errors() {
+    let dir = scratch("strict");
+    fs::write(dir.join("a.lua"), "local a = 1\nprint(a)\n").expect("write");
+    fs::write(
+        dir.join(".proofreader.yml"),
+        "Style/StringLiterals:\n  EnforcedStlye: single_quotes\n",
+    )
+    .expect("write");
+    let lenient = proofreader(&dir, &["-f", "quiet"]);
+    assert_eq!(lenient.status.code(), Some(0));
+    assert!(
+        stderr(&lenient).contains("Warning: unknown option Style/StringLiterals.EnforcedStlye in ")
+    );
+    assert!(stderr(&lenient).contains("; did you mean EnforcedStyle?"));
+    let strict = proofreader(&dir, &["-f", "quiet", "--strict"]);
+    assert_eq!(strict.status.code(), Some(2));
+}
+
+#[test]
+fn unsettled_corrections_exit_with_two() {
+    let dir = scratch("unsettled");
+    fs::write(dir.join("a.lua"), "local a = 1\nlocal bbb = 2\n").expect("write");
+    fs::write(
+        dir.join(".proofreader.yml"),
+        "Layout/ExtraSpacing:\n  ForceEqualSignAlignment: true\n\
+         Layout/SpaceAroundOperators:\n  AllowForAlignment: false\n",
+    )
+    .expect("write");
+    let output = proofreader(&dir, &["--fix", "-f", "quiet", "--max-passes", "4"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains(
+        "Warning: autocorrection did not settle in a.lua: Layout/ExtraSpacing, \
+         Layout/SpaceAroundOperators undo each other"
+    ));
+    assert!(stdout(&output).contains("a.lua:1:"));
+}
+
+#[test]
+fn compact_format_is_one_line_per_offense() {
+    let output = proofreader(
+        &fixtures(),
+        &[
+            "offenses.lua",
+            "--only",
+            "Layout/TrailingWhitespace",
+            "-f",
+            "compact",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).starts_with(
+        "offenses.lua:1:12: convention: Layout/TrailingWhitespace: Trailing whitespace detected.\n\
+         offenses.lua:2:12: convention: Layout/TrailingWhitespace: Trailing whitespace detected.\n"
+    ));
 }
 
 #[test]

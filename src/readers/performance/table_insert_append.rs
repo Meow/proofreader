@@ -52,7 +52,7 @@ impl Reader for TableInsertAppend {
             resolution: &resolution,
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message, replacement) in finder.found {
             match replacement {
                 Some(replacement) => {
@@ -92,10 +92,7 @@ impl<'t> Visitor<'t> for Finder<'_> {
             return;
         };
         if callee.dotted_name(self.source).as_deref() != Some("table.insert")
-            || self
-                .resolution
-                .reference_at(library.start)
-                .is_none_or(|reference| reference.variable.is_some())
+            || !self.resolution.is_global_at(library.start)
         {
             return;
         }

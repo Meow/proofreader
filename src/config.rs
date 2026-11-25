@@ -13,7 +13,10 @@ use yaml_rust2::yaml::Hash;
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::offense::Severity;
-use crate::reader::{DEPARTMENTS, Reader, department, department_options, reader_named, registry};
+use crate::reader::{
+    DEPARTMENTS, Reader, closest, department, department_options, did_you_mean, reader_named,
+    registry, suggest_reader,
+};
 
 /// File name of configuration files.
 pub const CONFIG_FILE_NAME: &str = ".proofreader.yml";
@@ -23,6 +26,9 @@ pub const ALL_READERS: &str = "AllReaders";
 
 /// Key listing the files a configuration inherits from.
 const INHERIT_FROM: &str = "inherit_from";
+
+/// Keys the `AllReaders` section understands.
+const ALL_READERS_KEYS: [&str; 3] = ["Include", "Exclude", "Severity"];
 
 /// Keys every reader section understands; everything else is a reader option.
 const STANDARD_KEYS: [&str; 6] = [
@@ -38,10 +44,12 @@ const STANDARD_KEYS: [&str; 6] = [
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// The file could not be read.
-    #[error("cannot read {}: {source}", path.display())]
+    #[error("cannot read {}{}", path.display(), inherited_from(inherited_by.as_deref()))]
     Io {
         /// The file that failed.
         path: PathBuf,
+        /// The configuration file whose `inherit_from` names it, if any.
+        inherited_by: Option<PathBuf>,
         /// The underlying error.
         #[source]
         source: io::Error,
@@ -54,6 +62,13 @@ pub enum ConfigError {
         /// What is wrong.
         message: String,
     },
+}
+
+/// ` (inherit_from of <file>)` for a file named by the `inherit_from` of `by`, or nothing.
+fn inherited_from(by: Option<&Path>) -> String {
+    by.map_or_else(String::new, |file| {
+        format!(" (inherit_from of {})", file.display())
+    })
 }
 
 /// Builds a [`ConfigError::Invalid`].
@@ -262,6 +277,10 @@ struct Layers {
     sections: BTreeMap<String, Hash>,
     bases: HashMap<(String, String), PathBuf>,
     origins: BTreeMap<String, PathBuf>,
+    /// The file that last set each `(section, key)`.
+    key_origins: BTreeMap<(String, String), PathBuf>,
+    /// The files merged, in merge order.
+    files: Vec<PathBuf>,
 }
 
 impl Layers {
@@ -273,12 +292,14 @@ impl Layers {
         }
         let text = fs::read_to_string(&path).map_err(|source| ConfigError::Io {
             path: path.clone(),
+            inherited_by: stack.last().cloned(),
             source,
         })?;
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         stack.push(path.clone());
         let result = self.load_text(&text, &path, &dir, stack);
         stack.pop();
+        self.files.push(path);
         result
     }
 
@@ -338,6 +359,8 @@ impl Layers {
                     self.bases
                         .insert((name.clone(), option_name.to_owned()), dir.to_path_buf());
                 }
+                self.key_origins
+                    .insert((name.clone(), option_name.to_owned()), path.to_path_buf());
                 section.replace(option, value);
             }
         }
@@ -351,6 +374,141 @@ impl Layers {
             .cloned()
             .unwrap_or_else(|| fallback.to_path_buf())
     }
+}
+
+/// What a value replacing `default` should be, when `value` is not that: the type of the
+/// default (a list option also takes a single item), or a non-negative integer for an integer.
+fn type_problem(value: &Yaml, default: &Yaml) -> Option<&'static str> {
+    match (default, value) {
+        (_, Yaml::Null) => None,
+        (Yaml::Integer(_), Yaml::Integer(number)) if *number >= 0 => None,
+        (Yaml::Integer(_), Yaml::String(text)) if text.trim().parse::<usize>().is_ok() => None,
+        (Yaml::Integer(_), _) => Some("a non-negative integer"),
+        (Yaml::Real(_), Yaml::Real(_) | Yaml::Integer(_)) => None,
+        (Yaml::Real(_), _) => Some("a number"),
+        (Yaml::Boolean(_), Yaml::Boolean(_)) => None,
+        (Yaml::Boolean(_), _) => Some("true or false"),
+        (Yaml::String(_), Yaml::String(_)) => None,
+        (Yaml::String(_), _) => Some("a string"),
+        (Yaml::Array(_), Yaml::Array(_) | Yaml::String(_) | Yaml::Integer(_) | Yaml::Real(_)) => {
+            None
+        }
+        (Yaml::Array(_), _) => Some("a list"),
+        (Yaml::Hash(_), Yaml::Hash(_)) => None,
+        (Yaml::Hash(_), _) => Some("a mapping"),
+        _ => None,
+    }
+}
+
+/// A one-line rendering of a configured value for warnings.
+fn shown(value: &Yaml) -> String {
+    match value {
+        Yaml::String(text) => text.clone(),
+        other => yaml_flow(other),
+    }
+}
+
+/// Warnings about what the configuration sets but nothing reads, or sets to a value the
+/// reader does not understand: unknown sections and keys, values of the wrong type and
+/// enumerated options (`EnforcedStyle`) set to something else, each with the nearest valid
+/// name when there is one.
+fn validation_warnings(layers: &Layers) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (name, origin) in &layers.origins {
+        if name == ALL_READERS
+            || DEPARTMENTS.contains(&name.as_str())
+            || reader_named(name).is_some()
+        {
+            continue;
+        }
+        let kind = if name.contains('/') {
+            "reader"
+        } else {
+            "department"
+        };
+        warnings.push(format!(
+            "Warning: unrecognized {kind} {name} found in {}{}",
+            origin.display(),
+            did_you_mean(suggest_reader(name))
+        ));
+    }
+    for ((section, option), origin) in &layers.key_origins {
+        let Some(value) = layers
+            .sections
+            .get(section)
+            .and_then(|keys| keys.get(&key(option)))
+        else {
+            continue;
+        };
+        let readers: Vec<&dyn Reader> = if section == ALL_READERS {
+            Vec::new()
+        } else if DEPARTMENTS.contains(&section.as_str()) {
+            registry()
+                .iter()
+                .map(AsRef::as_ref)
+                .filter(|reader| department(reader.name()) == section)
+                .collect()
+        } else if let Some(reader) = reader_named(section) {
+            vec![reader]
+        } else {
+            continue;
+        };
+        let shared = if section == ALL_READERS {
+            Vec::new()
+        } else {
+            department_options(department(section))
+        };
+        let defaults: Vec<(&'static str, Yaml)> = shared
+            .into_iter()
+            .chain(readers.iter().flat_map(|reader| reader.default_options()))
+            .collect();
+        let standard: &[&str] = if section == ALL_READERS {
+            &ALL_READERS_KEYS
+        } else {
+            &STANDARD_KEYS
+        };
+        let place = format!("{section}.{option} in {}", origin.display());
+        if standard.contains(&option.as_str()) {
+            continue;
+        }
+        let Some((_, default)) = defaults.iter().find(|(name, _)| name == option) else {
+            let known = standard
+                .iter()
+                .copied()
+                .chain(defaults.iter().map(|(name, _)| *name));
+            warnings.push(format!(
+                "Warning: unknown option {place}{}",
+                did_you_mean(closest(option, known.map(|name| (name, name))))
+            ));
+            continue;
+        };
+        if let Some(expected) = type_problem(value, default) {
+            warnings.push(format!(
+                "Warning: {place} should be {expected}, not {}",
+                shown(value)
+            ));
+            continue;
+        }
+        let allowed: Vec<&'static str> = readers
+            .iter()
+            .flat_map(|reader| reader.allowed_values())
+            .filter(|(name, _)| name == option)
+            .flat_map(|(_, values)| values.iter().copied())
+            .collect();
+        if let Some(text) = value.as_str()
+            && !allowed.is_empty()
+            && !allowed.contains(&text)
+        {
+            let mut unique = allowed.clone();
+            unique.dedup();
+            warnings.push(format!(
+                "Warning: {place} should be one of {}, not {text}{}",
+                unique.join(", "),
+                did_you_mean(closest(text, unique.iter().map(|value| (*value, *value))))
+            ));
+        }
+    }
+    warnings
 }
 
 /// Collects validation errors while building a [`Config`].
@@ -417,6 +575,7 @@ impl Validator {
 #[derive(Debug)]
 pub struct Config {
     path: Option<PathBuf>,
+    files: Vec<PathBuf>,
     base_dir: PathBuf,
     include: Patterns,
     exclude: Patterns,
@@ -572,7 +731,7 @@ impl Config {
                 ),
                 severity: validator
                     .severity(effective.get(&key("Severity")), &format!("{name}.Severity"))
-                    .or(severity),
+                    .or(severity.filter(|_| reader.default_severity() != Severity::Fatal)),
                 autocorrect: validator.boolean(
                     effective.get(&key("AutoCorrect")),
                     true,
@@ -585,23 +744,10 @@ impl Config {
             readers.insert(name, config);
             sections.insert(name, section);
         }
-        let warnings = layers
-            .origins
-            .iter()
-            .filter(|(name, _)| {
-                name.as_str() != ALL_READERS
-                    && !DEPARTMENTS.contains(&name.as_str())
-                    && reader_named(name).is_none()
-            })
-            .map(|(name, origin)| {
-                format!(
-                    "Warning: unrecognized reader {name} found in {}",
-                    origin.display()
-                )
-            })
-            .collect();
+        let warnings = validation_warnings(layers);
         let config = Config {
             path,
+            files: layers.files.clone(),
             base_dir: base_dir.to_path_buf(),
             include,
             exclude,
@@ -620,6 +766,11 @@ impl Config {
         self.path.as_deref()
     }
 
+    /// The files merged into this configuration, inherited ones first, in merge order.
+    pub fn files(&self) -> &[PathBuf] {
+        &self.files
+    }
+
     /// The directory relative patterns are resolved against.
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
@@ -633,6 +784,33 @@ impl Config {
     /// Whether `AllReaders.Include`/`Exclude` select the absolute `path`.
     pub fn includes_file(&self, path: &Path) -> bool {
         self.include.matches(path) && !self.exclude.matches(path)
+    }
+
+    /// Whether `AllReaders.Exclude` matches the absolute `path`.
+    pub fn excludes_file(&self, path: &Path) -> bool {
+        self.exclude.matches(path)
+    }
+
+    /// `AllReaders.Include` and `Exclude` as written, and `AllReaders.Severity` when set, as a
+    /// YAML section.
+    pub fn describe_all_readers(&self) -> String {
+        let list = |patterns: &Patterns| {
+            let items: Vec<String> = patterns
+                .patterns()
+                .iter()
+                .map(|pattern| format!("'{}'", pattern.replace('\'', "''")))
+                .collect();
+            format!("[{}]", items.join(", "))
+        };
+        let mut out = format!(
+            "{ALL_READERS}:\n  Include: {}\n  Exclude: {}\n",
+            list(&self.include),
+            list(&self.exclude)
+        );
+        if let Some(severity) = self.severity {
+            let _ = writeln!(out, "  Severity: {severity}");
+        }
+        out
     }
 
     /// Settings of the reader called `name` (defaults for unknown names).
@@ -1040,6 +1218,45 @@ mod tests {
     }
 
     #[test]
+    fn all_readers_severity_leaves_fatal_readers_alone() {
+        let config =
+            Config::from_yaml_str("AllReaders:\n  Severity: convention\n", Path::new("/p"))
+                .expect("valid");
+        let syntax = reader_named("Lint/Syntax").expect("registered");
+        assert_eq!(config.severity_of(syntax), Severity::Fatal);
+        let explicit = Config::from_yaml_str(
+            "AllReaders:\n  Severity: convention\nLint/Syntax:\n  Severity: error\n",
+            Path::new("/p"),
+        )
+        .expect("valid");
+        assert_eq!(explicit.severity_of(syntax), Severity::Error);
+    }
+
+    #[test]
+    fn unreadable_files_name_the_file_inheriting_them_once() {
+        let dir = scratch("unreadable");
+        write(&dir.join("a.yml"), "inherit_from: missing.yml\n");
+        let error = Config::load(&dir.join("a.yml")).expect_err("missing");
+        let message = format!("{:#}", anyhow::Error::from(error));
+        assert_eq!(
+            message.matches("No such file or directory").count(),
+            1,
+            "{message}"
+        );
+        assert!(message.starts_with(&format!(
+            "cannot read {} (inherit_from of {}): ",
+            dir.join("missing.yml").display(),
+            dir.join("a.yml").display()
+        )));
+        let direct = Config::load(&dir.join("nope.yml")).expect_err("missing");
+        assert_eq!(
+            direct.to_string(),
+            format!("cannot read {}", dir.join("nope.yml").display())
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn invalid_values_are_errors() {
         assert!(
             Config::from_yaml_str("Layout/LineLength:\n  Severity: loud\n", Path::new("/p"))
@@ -1063,6 +1280,73 @@ mod tests {
         assert!(
             config.warnings()[0].starts_with("Warning: unrecognized reader Foo/Bar found in /p/")
         );
+    }
+
+    #[test]
+    fn unknown_names_and_values_produce_warnings_with_suggestions() {
+        let config = Config::from_yaml_str(
+            "AllReaders:\n  Exlude: ['a']\n\
+             Style/StringLiteral:\n  Enabled: false\n\
+             Stlye:\n  Enabled: true\n\
+             Style/StringLiterals:\n  EnforcedStlye: single_quotes\n\
+             Style/Not:\n  EnforcedStyle: dobule\n\
+             Style/AndOr:\n  EnforcedStyle: symbls\n\
+             Layout/LineLength:\n  Max: eighty\n  IndentationWidth: -1\n  AllowURI: 'yes'\n\
+             Performance:\n  HotPath: [Think]\n  Description: shared\n\
+             Layout:\n  IndentationWidth: 4\n  EnforcedStyle: space\n",
+            Path::new("/p"),
+        )
+        .expect("valid");
+        let file = "/p/.proofreader.yml";
+        let expected = [
+            format!("Warning: unrecognized department Stlye found in {file}; did you mean Style?"),
+            format!(
+                "Warning: unrecognized reader Style/StringLiteral found in {file}; did you mean \
+                 Style/StringLiterals?"
+            ),
+            format!("Warning: unknown option AllReaders.Exlude in {file}; did you mean Exclude?"),
+            format!(
+                "Warning: Layout/LineLength.AllowURI in {file} should be true or false, not yes"
+            ),
+            format!(
+                "Warning: Layout/LineLength.IndentationWidth in {file} should be a non-negative \
+                 integer, not -1"
+            ),
+            format!(
+                "Warning: Layout/LineLength.Max in {file} should be a non-negative integer, not \
+                 eighty"
+            ),
+            format!(
+                "Warning: unknown option Performance.HotPath in {file}; did you mean HotPaths?"
+            ),
+            format!(
+                "Warning: Style/AndOr.EnforcedStyle in {file} should be one of keywords, symbols, \
+                 not symbls; did you mean symbols?"
+            ),
+            format!(
+                "Warning: Style/Not.EnforcedStyle in {file} should be one of bang, keyword, not \
+                 dobule"
+            ),
+            format!(
+                "Warning: unknown option Style/StringLiterals.EnforcedStlye in {file}; did you \
+                 mean EnforcedStyle?"
+            ),
+        ];
+        assert_eq!(config.warnings(), expected);
+    }
+
+    #[test]
+    fn every_example_configuration_is_valid() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        for entry in fs::read_dir(&examples).expect("examples") {
+            let path = entry.expect("entry").path().join(CONFIG_FILE_NAME);
+            if path.is_file() {
+                let config = Config::load(&path).expect("valid example");
+                assert!(config.warnings().is_empty(), "{:?}", config.warnings());
+            }
+        }
+        let defaults = Config::load(&examples.join(CONFIG_FILE_NAME)).expect("valid defaults");
+        assert!(defaults.warnings().is_empty(), "{:?}", defaults.warnings());
     }
 
     #[test]

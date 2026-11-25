@@ -45,7 +45,7 @@ impl Reader for ClassName {
             functions: ctx.option_str_list("Functions", &["class", "mod", "extends"]),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for range in finder.found {
             ctx.add_offense(range, "Use PascalCase for class and module names.");
         }

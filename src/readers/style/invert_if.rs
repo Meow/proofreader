@@ -54,7 +54,7 @@ impl Reader for InvertIf {
             function_body_next: false,
             found: Vec::new(),
         };
-        walk(&chunk, &mut finder);
+        walk(chunk, &mut finder);
         for keyword in finder.found {
             ctx.add_offense(
                 keyword.range(),

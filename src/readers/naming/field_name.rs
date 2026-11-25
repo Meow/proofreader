@@ -7,7 +7,7 @@ use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::ast::{
     Expression, ExpressionKind, FieldKey, Statement, StatementKind, Visitor, parse, walk,
 };
-use crate::readers::naming::case::NamingStyle;
+use crate::readers::naming::case::{NAMING_STYLES, NamingStyle};
 use crate::source::Source;
 use crate::token::Token;
 
@@ -63,6 +63,10 @@ impl Reader for FieldName {
         ]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &NAMING_STYLES)]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let Ok(block) = parse(source) else {
@@ -75,7 +79,7 @@ impl Reader for FieldName {
             allowed: allowed_names(&ctx.option_str_list("AllowedNames", &ALLOWED)),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         let message = format!("Use {} for field names.", style.label());
         for token in finder.found {
             ctx.add_offense(token.range(), message.clone());

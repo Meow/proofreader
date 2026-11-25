@@ -3,9 +3,12 @@
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use crate::lexer::{lex, lex_lumen};
 use crate::lumen::{Markup, component_root, is_component_name};
+use crate::offense::EXCERPT_CHARS;
+use crate::readers::lint::ast::{Block, ParseError};
 use crate::token::{Token, TokenKind};
 
 /// A lexed source file. Line numbers are 1-based `u32`s everywhere, matching [`Token::line`].
@@ -21,6 +24,7 @@ pub struct Source {
     code: Vec<usize>,
     lumen: bool,
     markup: Markup,
+    syntax_tree: OnceLock<Result<Block, ParseError>>,
 }
 
 impl Source {
@@ -58,7 +62,17 @@ impl Source {
             code,
             lumen,
             markup,
+            syntax_tree: OnceLock::new(),
         }
+    }
+
+    /// The syntax tree of the file, built with `build` the first time it is asked for
+    /// (see [`crate::readers::lint::ast::parse`]).
+    pub fn syntax_tree(
+        &self,
+        build: impl FnOnce() -> Result<Block, ParseError>,
+    ) -> &Result<Block, ParseError> {
+        self.syntax_tree.get_or_init(build)
     }
 
     /// Whether the file is a Lumen template, which may hold [`TokenKind::Markup`] tokens.
@@ -95,6 +109,33 @@ impl Source {
     /// Text of line `n` without its `\n` (a `\r` before it is kept); empty when out of range.
     pub fn line(&self, n: u32) -> &str {
         &self.text[self.line_range(n)]
+    }
+
+    /// The text of line `n` to show with an offense starting at byte `offset` on it, and the
+    /// byte offset in the line where that text starts: the whole line, or for a line of more
+    /// than [`EXCERPT_CHARS`] characters that many characters around `offset`, a third of them
+    /// before it. Takes time in proportion to the excerpt, never to the whole line.
+    pub fn excerpt(&self, n: u32, offset: usize) -> (&str, usize) {
+        let range = self.line_range(n);
+        let line = &self.text[range.clone()];
+        if line.chars().nth(EXCERPT_CHARS).is_none() {
+            return (line, 0);
+        }
+        let mut at = offset.clamp(range.start, range.end) - range.start;
+        while !line.is_char_boundary(at) {
+            at -= 1;
+        }
+        let start = line[..at]
+            .char_indices()
+            .rev()
+            .take(EXCERPT_CHARS / 3)
+            .last()
+            .map_or(at, |(index, _)| index);
+        let end = line[start..]
+            .char_indices()
+            .nth(EXCERPT_CHARS)
+            .map_or(line.len(), |(index, _)| start + index);
+        (&line[start..end], start)
     }
 
     /// Iterates over `(line number, line text)` pairs.
@@ -303,6 +344,23 @@ mod tests {
         assert_eq!(src.line(4), "");
         assert_eq!(source("").line_count(), 1);
         assert_eq!(source("x").line_count(), 1);
+    }
+
+    #[test]
+    fn long_lines_are_cut_around_the_offset() {
+        let short = source("ab\ncd");
+        assert_eq!(short.excerpt(2, 4), ("cd", 0));
+        let long = source(&format!("x\n{}", "é".repeat(1000)));
+        let (text, start) = long.excerpt(2, 2 + 1000);
+        assert_eq!(text.chars().count(), EXCERPT_CHARS);
+        assert_eq!(start, 1000 - 2 * (EXCERPT_CHARS / 3));
+        assert_eq!(
+            long.excerpt(2, 2),
+            (&long.text[2..2 + 2 * EXCERPT_CHARS], 0)
+        );
+        let (tail, start) = long.excerpt(2, long.text.len());
+        assert_eq!(start + tail.len(), 2000);
+        assert!(tail.chars().count() <= EXCERPT_CHARS);
     }
 
     #[test]

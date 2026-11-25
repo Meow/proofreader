@@ -270,6 +270,12 @@ Lint/HookName:
   AutoCorrect: true
   Functions: { hook.Add: 1, hook.Remove: 1, hook.Run: 1, hook.Call: 1, gamemode.Call: 1 }
 
+# Checks for misspelled inline directives and directives naming unknown readers.
+Lint/InvalidDirective:
+  Enabled: true
+  Severity: warning
+  AutoCorrect: true
+
 # Checks for conditions that are always truthy or always falsy because of literals.
 Lint/LiteralAsCondition:
   Enabled: true

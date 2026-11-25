@@ -96,7 +96,7 @@ impl Reader for GlobalAssignment {
             functions: Vec::new(),
             writes: Vec::new(),
         };
-        walk(&chunk, &mut finder);
+        walk(chunk, &mut finder);
         let file_level: HashSet<&str> = finder
             .writes
             .iter()

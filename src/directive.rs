@@ -11,13 +11,14 @@
 //! Every form works in any kind of comment (`--`, `//`, `--[[ ]]`, `/* */`) and may be followed
 //! by a list of readers, separated by commas or spaces and resolved like `--only` (a full name,
 //! a department or a bare name); without a list it applies to every reader. Anything after a
-//! `--` standing on its own is a free-form explanation.
+//! `--` standing on its own is a free-form explanation. [`problems`] finds the directives that
+//! are misspelled or name an unknown reader, which `Lint/InvalidDirective` reports.
 
 use std::collections::BTreeSet;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use crate::offense::Offense;
-use crate::reader::find_reader;
+use crate::reader::{closest, did_you_mean, find_reader, suggest_reader};
 use crate::source::Source;
 use crate::token::Token;
 
@@ -66,29 +67,90 @@ struct LineRule {
     readers: Readers,
 }
 
-/// Parses the text of a comment token as a directive.
-fn parse_comment(text: &str) -> Option<(Action, Readers)> {
-    let body = text
-        .trim_start_matches(['-', '/', '*', '[', '='])
+/// The text of a comment between its markers, trimmed.
+fn comment_body(text: &str) -> &str {
+    text.trim_start_matches(['-', '/', '*', '[', '='])
         .trim_end_matches([']', '=', '*', '/'])
-        .trim();
-    let rest = body.strip_prefix(PREFIX)?;
+        .trim()
+}
+
+/// The action of a directive body after [`PREFIX`] and the text after the action word, when
+/// the body starts with an action followed by whitespace or nothing.
+fn action_of(rest: &str) -> Option<(Action, &str)> {
     let (action, rest) = ACTIONS
         .into_iter()
         .find_map(|(word, action)| rest.strip_prefix(word).map(|rest| (action, rest)))?;
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let mut names = rest
-        .split(|c: char| c == ',' || c.is_whitespace())
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some((action, rest))
+}
+
+/// The reader names listed after the action of a directive, up to a `--` explanation.
+fn listed_names(rest: &str) -> impl Iterator<Item = &str> {
+    rest.split(|c: char| c == ',' || c.is_whitespace())
         .filter(|word| !word.is_empty())
         .take_while(|word| word.len() < 2 || word.bytes().any(|byte| byte != b'-'))
-        .peekable();
+}
+
+/// Parses the text of a comment token as a directive.
+fn parse_comment(text: &str) -> Option<(Action, Readers)> {
+    let rest = comment_body(text).strip_prefix(PREFIX)?;
+    let (action, rest) = action_of(rest)?;
+    let mut names = listed_names(rest).peekable();
     let readers = names
         .peek()
         .is_some()
         .then(|| names.flat_map(find_reader).collect());
     Some((action, readers))
+}
+
+/// `head` as a sentence: followed by `; did you mean X?` for a suggestion `X`, else by `.`.
+fn sentence(head: String, suggestion: Option<&str>) -> String {
+    match suggestion {
+        Some(_) => format!("{head}{}", did_you_mean(suggestion)),
+        None => format!("{head}."),
+    }
+}
+
+/// The directives of `source` that do not do what they say, with the byte range to report and
+/// a message: a comment starting with `proofreader-` whose action is misspelled
+/// (`proofreader-disable-lines`, `proofreader-disable-line:`), and every listed reader name
+/// that names no reader or department, each with the nearest valid spelling when there is one.
+pub fn problems(source: &Source) -> Vec<(Range<usize>, String)> {
+    let mut found = Vec::new();
+    for token in source.tokens.iter().filter(|token| token.kind.is_comment()) {
+        let text = source.text_of(token);
+        let body = comment_body(text);
+        let Some(rest) = body.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let offset_of =
+            |part: &str| token.start + (part.as_ptr() as usize - text.as_ptr() as usize);
+        let Some((_, names)) = action_of(rest) else {
+            let word = rest.split(char::is_whitespace).next().unwrap_or(rest);
+            let start = offset_of(body);
+            let actions = ACTIONS.map(|(action, _)| action);
+            let suggestion = closest(word, actions.iter().map(|action| (*action, *action)))
+                .map(|action| format!("{PREFIX}{action}"));
+            found.push((
+                start..offset_of(word) + word.len(),
+                sentence(
+                    format!("Malformed directive `{PREFIX}{word}`"),
+                    suggestion.as_deref(),
+                ),
+            ));
+            continue;
+        };
+        for name in listed_names(names).filter(|name| find_reader(name).is_empty()) {
+            let start = offset_of(name);
+            found.push((
+                start..start + name.len(),
+                sentence(
+                    format!("Unknown reader or department `{name}` in a directive"),
+                    suggest_reader(name),
+                ),
+            ));
+        }
+    }
+    found
 }
 
 /// Where a `disable`/`enable` comment takes effect: at the start of its line when nothing but
@@ -296,6 +358,48 @@ mod tests {
                 "-- note\nx = '-- proofreader-disable'\n"
             ))
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn misspelled_directives_and_unknown_names_are_problems() {
+        let source = Source::new(
+            "x.lua",
+            "a() -- proofreader-disable-line Style/Nott, Layout\n\
+             b() -- proofreader-disable-line: Style/Not\n\
+             /* proofreader-disabled */\n\
+             -- proofreader-enable Nope -- Not/Checked\n\
+             -- see proofreader-disable-line Nothing\n",
+        );
+        let found: Vec<(&str, String)> = problems(&source)
+            .into_iter()
+            .map(|(range, message)| (&source.text[range], message))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "Style/Nott",
+                    "Unknown reader or department `Style/Nott` in a directive; did you mean \
+                     Style/Not?"
+                        .to_owned()
+                ),
+                (
+                    "proofreader-disable-line:",
+                    "Malformed directive `proofreader-disable-line:`; did you mean \
+                     proofreader-disable-line?"
+                        .to_owned()
+                ),
+                (
+                    "proofreader-disabled",
+                    "Malformed directive `proofreader-disabled`; did you mean proofreader-disable?"
+                        .to_owned()
+                ),
+                (
+                    "Nope",
+                    "Unknown reader or department `Nope` in a directive.".to_owned()
+                ),
+            ]
         );
     }
 

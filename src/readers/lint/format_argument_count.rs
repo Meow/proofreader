@@ -49,7 +49,7 @@ impl Reader for FormatArgumentCount {
             functions: &functions,
             found: Vec::new(),
         };
-        walk(&chunk, &mut finder);
+        walk(chunk, &mut finder);
         for (range, message) in finder.found {
             ctx.add_offense(range, message);
         }

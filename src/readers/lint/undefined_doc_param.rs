@@ -43,7 +43,7 @@ impl Reader for UndefinedDocParam {
         let Ok(block) = parse(source) else {
             return;
         };
-        for function in functions(source, &block) {
+        for function in functions(source, block) {
             let Some(doc) = &function.doc else {
                 continue;
             };

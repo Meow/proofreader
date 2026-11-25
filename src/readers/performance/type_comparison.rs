@@ -6,6 +6,7 @@ use yaml_rust2::yaml::Hash;
 use crate::offense::Edit;
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::ast::{Expression, ExpressionKind, Visitor, parse, walk};
+use crate::readers::lint::scopes::{Resolution, resolve};
 use crate::source::Source;
 use crate::token::TokenKind;
 
@@ -28,7 +29,8 @@ const MAX_QUOTED_ARGUMENT: usize = 40;
 /// Flags `type(x) == 'number'` and `type(x) != 'number'` (either order, `~=` too) when
 /// `Predicates` maps the type name to a predicate (`isnumber`), which answers the question
 /// without building and comparing a string. The fix writes `isnumber(x)` or
-/// `not isnumber(x)`. Files that do not parse are skipped.
+/// `not isnumber(x)`. A `type` or predicate that is a local there is left alone. Files that do
+/// not parse are skipped.
 pub struct TypeComparison;
 
 impl Reader for TypeComparison {
@@ -53,15 +55,16 @@ impl Reader for TypeComparison {
 
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
-        let Ok(block) = parse(source) else {
+        let (Ok(block), Some(resolution)) = (parse(source), resolve(source)) else {
             return;
         };
         let mut finder = Finder {
             source,
+            resolution: &resolution,
             predicates: ctx.option_str_map("Predicates"),
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, message, replacement) in finder.found {
             ctx.add_offense_with_fix(
                 range.clone(),
@@ -75,15 +78,21 @@ impl Reader for TypeComparison {
 /// Collects the comparisons of `type(x)` with a type name that has a predicate.
 struct Finder<'a> {
     source: &'a Source,
+    resolution: &'a Resolution<'a>,
     predicates: Vec<(String, String)>,
     found: Vec<(std::ops::Range<usize>, String, String)>,
 }
 
 impl Finder<'_> {
-    /// The argument of `operand` when it is `type(x)` with exactly one argument.
+    /// The argument of `operand` when it is a call of the global `type` with exactly one
+    /// argument.
     fn type_argument<'t>(&self, operand: &'t Expression) -> Option<&'t Expression> {
-        let (function, arguments) = operand.unparenthesized().as_call(self.source)?;
-        if function != "type" || arguments.values.len() != 1 {
+        let call = operand.unparenthesized();
+        let (function, arguments) = call.as_call(self.source)?;
+        if function != "type"
+            || arguments.values.len() != 1
+            || !self.resolution.is_global_at(call.range.start)
+        {
             return None;
         }
         arguments.values.first()
@@ -120,6 +129,13 @@ impl<'t> Visitor<'t> for Finder<'_> {
         let Some((argument, (type_name, predicate))) = found else {
             return;
         };
+        if self
+            .resolution
+            .visible_at(predicate, expression.range.start)
+            .is_some()
+        {
+            return;
+        }
         let argument = &self.source.text[argument.range.clone()];
         let negated = operator.kind == TokenKind::Ne;
         let replacement = if negated {
@@ -204,6 +220,17 @@ mod tests {
         assert_eq!(
             offenses[0].message,
             "Use `isentity(a)` instead of `type(a) == 'Entity'`."
+        );
+    }
+
+    #[test]
+    fn ignores_locals_named_like_the_functions() {
+        expect_no_offenses(
+            READER,
+            "local function b(type) return type(1) ~= 'string' end
+             local isnumber = f
+if type(a) == 'number' then end
+",
         );
     }
 }

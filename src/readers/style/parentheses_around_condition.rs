@@ -38,6 +38,10 @@ impl Reader for ParenthesesAroundCondition {
         vec![("EnforcedStyle", Yaml::String("omit".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["omit", "require"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         if ctx.option_str("EnforcedStyle", "omit") == "require" {
             require(ctx);
@@ -87,7 +91,7 @@ fn require(ctx: &mut Context) {
         source: ctx.source,
         found: Vec::new(),
     };
-    walk(&block, &mut finder);
+    walk(block, &mut finder);
     for (condition, keyword) in finder.found {
         let article = if keyword == "while" { "a" } else { "an" };
         ctx.add_offense_with_fix(

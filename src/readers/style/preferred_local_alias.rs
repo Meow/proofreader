@@ -46,7 +46,7 @@ impl Reader for PreferredLocalAlias {
             assigned: Vec::new(),
             targets: Vec::new(),
         };
-        walk(&block, &mut collector);
+        walk(block, &mut collector);
         let aliases: Vec<Alias> = collector
             .aliases
             .iter()
@@ -126,9 +126,7 @@ impl AliasCandidate {
             .iter()
             .enumerate()
             .find(|(_, variable)| variable.token.start == self.name_start)?;
-        if !variable.writes.is_empty()
-            || resolution.reference_at(self.base_start)?.variable.is_some()
-        {
+        if !variable.writes.is_empty() || !resolution.is_global_at(self.base_start) {
             return None;
         }
         Some(Alias {
@@ -149,9 +147,7 @@ impl Alias {
             && offset >= self.statement_end
             && offset < self.scope_end
             && resolution.visible_at(&self.name, offset) == Some(self.variable)
-            && resolution
-                .reference_at(offset)
-                .is_some_and(|reference| reference.variable.is_none())
+            && resolution.is_global_at(offset)
     }
 }
 

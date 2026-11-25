@@ -72,7 +72,8 @@ const DEFAULT_SAFE_FUNCTIONS: &[&str] = &[
 /// `table.remove(t, ...)` outside the loop. Any other use (`t[k] = v`, `t.name = v`, passing it to
 /// another function, storing it elsewhere) may break the sequence, and the loop is left alone.
 ///
-/// The fix writes `ipairs(t)`. Files that do not parse are skipped.
+/// A call counts only when the root of its name is the global (not a local `ents`). The fix
+/// writes `ipairs(t)`. Files that do not parse are skipped.
 pub struct SequentialPairs;
 
 impl Reader for SequentialPairs {
@@ -106,7 +107,7 @@ impl Reader for SequentialPairs {
             source,
             ctx.option_str_list("SafeFunctions", DEFAULT_SAFE_FUNCTIONS),
         );
-        walk(&block, &mut uses);
+        walk(block, &mut uses);
         let checker = Checker {
             source,
             resolution: &resolution,
@@ -350,10 +351,12 @@ impl Checker<'_> {
     fn builds_sequence(&self, value: &Expression) -> bool {
         match &value.unparenthesized().kind {
             ExpressionKind::Table(table) => is_sequence_constructor(table),
-            ExpressionKind::Call { .. } => value
-                .unparenthesized()
-                .as_call(self.source)
-                .is_some_and(|(function, _)| self.sequential.contains(&function)),
+            ExpressionKind::Call { .. } => {
+                let call = value.unparenthesized();
+                call.as_call(self.source)
+                    .is_some_and(|(function, _)| self.sequential.contains(&function))
+                    && self.resolution.is_global_at(call.range.start)
+            }
             _ => false,
         }
     }
@@ -547,6 +550,14 @@ mod tests {
         expect_no_offenses(
             READER,
             "local t = { 1 }\nfor k, v in pairs(t) do t[#t + 1] = v end\n",
+        );
+    }
+
+    #[test]
+    fn ignores_locals_named_like_the_libraries() {
+        expect_no_offenses(
+            READER,
+            "function f(ents)\n  for _, e in pairs(ents.GetAll()) do print(e) end\nend\n",
         );
     }
 

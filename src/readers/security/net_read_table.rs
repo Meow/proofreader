@@ -31,7 +31,7 @@ impl Reader for NetReadTable {
             source,
             found: Vec::new(),
         };
-        for handler in server_handlers(&block, source, "net.Receive") {
+        for handler in server_handlers(block, source, "net.Receive") {
             walk(&handler.function.body, &mut finder);
         }
         finder.found.sort_by_key(|range| range.start);

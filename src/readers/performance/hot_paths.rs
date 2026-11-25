@@ -484,7 +484,7 @@ mod tests {
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
-        hot_calls(&block, &source, &hot_paths, &hooks)
+        hot_calls(block, &source, &hot_paths, &hooks)
             .into_iter()
             .map(|call| (call.function, call.hot_path))
             .collect()
@@ -542,7 +542,7 @@ mod tests {
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
-        hot_functions(&block, &source, &hot_paths, &hooks)
+        hot_functions(block, &source, &hot_paths, &hooks)
             .into_iter()
             .map(|hot| (source.position(hot.function.keyword.start).0, hot.hot_path))
             .collect()

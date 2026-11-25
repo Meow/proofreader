@@ -1,4 +1,5 @@
-//! Report formatters: `progress` (default), `offenses`, `files`, `quiet`, `json` and `sarif`.
+//! Report formatters: `progress` (default), `offenses`, `files`, `quiet`, `compact`, `github`,
+//! `json` and `sarif`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -22,6 +23,11 @@ pub enum Format {
     Files,
     /// Every offense with its source line, without progress; nothing for a clean run.
     Quiet,
+    /// One `path:line:column: severity: Reader: message` line per offense; nothing for a clean
+    /// run.
+    Compact,
+    /// GitHub Actions workflow commands, which annotate the offenses in pull requests.
+    Github,
     /// Machine-readable JSON.
     Json,
     /// SARIF 2.1.0, for code scanning tools such as GitHub's.
@@ -39,6 +45,8 @@ pub struct Summary {
     pub corrected: usize,
     /// Offenses that could be corrected with `--fix` but were not.
     pub correctable: usize,
+    /// Offenses that only `--fix-unsafe` corrects and that were not corrected.
+    pub unsafe_correctable: usize,
     /// Offenses not corrected: the ones the human-readable formats list.
     pub remaining: usize,
 }
@@ -52,7 +60,12 @@ impl Summary {
             offenses: offenses().count(),
             corrected: offenses().filter(|offense| offense.corrected).count(),
             correctable: offenses()
-                .filter(|offense| offense.correctable() && !offense.corrected)
+                .filter(|offense| {
+                    offense.correctable() && !offense.unsafe_fix && !offense.corrected
+                })
+                .count(),
+            unsafe_correctable: offenses()
+                .filter(|offense| offense.correctable() && offense.unsafe_fix && !offense.corrected)
                 .count(),
             remaining: offenses().filter(|offense| !offense.corrected).count(),
         }
@@ -60,7 +73,8 @@ impl Summary {
 
     /// The summary sentence, such as `3 files inspected, 1 offense detected, 1 offense autocorrectable`;
     /// after corrections, also how many offenses remain
-    /// (`1 file inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining`).
+    /// (`1 file inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining`), and
+    /// how many only `--fix-unsafe` corrects (`2 offenses autocorrectable with --fix-unsafe`).
     pub fn line(&self) -> String {
         let mut line = format!("{} inspected, ", plural(self.files, "file"));
         if self.offenses == 0 {
@@ -79,6 +93,13 @@ impl Summary {
                 line,
                 ", {} autocorrectable",
                 plural(self.correctable, "offense")
+            );
+        }
+        if self.unsafe_correctable > 0 {
+            let _ = write!(
+                line,
+                ", {} autocorrectable with --fix-unsafe",
+                plural(self.unsafe_correctable, "offense")
             );
         }
         line
@@ -190,6 +211,8 @@ pub fn render(format: Format, reports: &[FileReport], color: bool) -> String {
     match format {
         Format::Progress => render_clang(reports, color, true),
         Format::Quiet => render_clang(reports, color, false),
+        Format::Compact => render_compact(reports),
+        Format::Github => render_github(reports),
         Format::Offenses => render_counts(reports),
         Format::Files => render_files(reports),
         Format::Json => render_json(reports),
@@ -221,13 +244,19 @@ fn render_clang(reports: &[FileReport], color: bool, progress: bool) -> String {
     out
 }
 
+/// The marker of an offense that `--fix` (`[Correctable] `) or only `--fix-unsafe`
+/// (`[Unsafe Correctable] `) can correct, or nothing.
+fn correctable_marker(offense: &Offense) -> &'static str {
+    match (offense.correctable(), offense.unsafe_fix) {
+        (false, _) => "",
+        (true, false) => "[Correctable] ",
+        (true, true) => "[Unsafe Correctable] ",
+    }
+}
+
 /// Writes one clang-style offense: header, source line and carets.
 fn write_offense(out: &mut String, path: &str, offense: &Offense, color: bool) {
-    let marker = if offense.correctable() {
-        "[Correctable] "
-    } else {
-        ""
-    };
+    let marker = correctable_marker(offense);
     let letter = paint(
         &format!("{}:", offense.severity.symbol()),
         Some(offense.severity),
@@ -236,13 +265,16 @@ fn write_offense(out: &mut String, path: &str, offense: &Offense, color: bool) {
     let _ = writeln!(
         out,
         "{path}:{}:{}: {letter} {marker}{}: {}",
-        offense.line, offense.col, offense.reader, offense.message
+        offense.line, offense.char_col, offense.reader, offense.message
     );
     let line = offense.source_line.trim_end_matches('\r');
     if line.trim().is_empty() {
         return;
     }
-    let mut start = (offense.col as usize).saturating_sub(1).min(line.len());
+    let mut start = (offense.col as usize)
+        .saturating_sub(1)
+        .saturating_sub(offense.excerpt_start as usize)
+        .min(line.len());
     while !line.is_char_boundary(start) {
         start -= 1;
     }
@@ -258,13 +290,86 @@ fn write_offense(out: &mut String, path: &str, offense: &Offense, color: bool) {
     let _ = writeln!(out, "{line}\n{indent}{}", "^".repeat(width));
 }
 
+/// One `path:line:column: severity: Reader: message` line per offense that was not corrected,
+/// with the column in characters.
+fn render_compact(reports: &[FileReport]) -> String {
+    let mut out = String::new();
+    for report in reports {
+        for offense in open_offenses(report) {
+            let _ = writeln!(
+                out,
+                "{}:{}:{}: {}: {}: {}",
+                report.path.display(),
+                offense.line,
+                offense.char_col,
+                offense.severity,
+                offense.reader,
+                offense.message
+            );
+        }
+    }
+    out
+}
+
+/// Escapes the message of a GitHub workflow command; with `property`, also for a property value.
+fn github_escape(text: &str, property: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            ':' if property => out.push_str("%3A"),
+            ',' if property => out.push_str("%2C"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// GitHub Actions workflow commands: `::warning file=...,line=...,col=...,endLine=...,
+/// endColumn=...,title=Reader::message` for every offense that was not corrected (`error` for
+/// the error and fatal severities, `warning` for warnings, `notice` otherwise, columns in
+/// characters), and `::error file=...::message` for every file that could not be read or
+/// written.
+fn render_github(reports: &[FileReport]) -> String {
+    let mut out = String::new();
+    for report in reports {
+        let file = github_escape(&report.path.display().to_string(), true);
+        if let Some(error) = &report.error {
+            let _ = writeln!(out, "::error file={file}::{}", github_escape(error, false));
+        }
+        for offense in open_offenses(report) {
+            let level = match offense.severity {
+                Severity::Error | Severity::Fatal => "error",
+                Severity::Warning => "warning",
+                Severity::Info | Severity::Refactor | Severity::Convention => "notice",
+            };
+            let _ = writeln!(
+                out,
+                "::{level} file={file},line={},col={},endLine={},endColumn={},title={}::{}",
+                offense.line,
+                offense.char_col,
+                offense.last_line,
+                offense.last_char_col,
+                github_escape(offense.reader, true),
+                github_escape(&offense.message, false)
+            );
+        }
+    }
+    out
+}
+
 /// Counts per reader of the offenses that were not corrected, most frequent first, plus a total.
 fn render_counts(reports: &[FileReport]) -> String {
-    let mut counts: BTreeMap<&str, (usize, bool)> = BTreeMap::new();
+    let mut counts: BTreeMap<&str, (usize, &str)> = BTreeMap::new();
     for offense in reports.iter().flat_map(open_offenses) {
-        let entry = counts.entry(offense.reader).or_default();
+        let entry = counts.entry(offense.reader).or_insert((0, ""));
         entry.0 += 1;
-        entry.1 |= offense.correctable();
+        let marker = correctable_marker(offense).trim_end();
+        if entry.1.is_empty() || marker == "[Correctable]" {
+            entry.1 = marker;
+        }
     }
     let total: usize = counts.values().map(|(count, _)| count).sum();
     let files = reports
@@ -272,14 +377,18 @@ fn render_counts(reports: &[FileReport]) -> String {
         .filter(|report| open_offenses(report).next().is_some())
         .count();
     let width = total.to_string().len() + 2;
-    let mut rows: Vec<(&str, usize, bool)> = counts
+    let mut rows: Vec<(&str, usize, &str)> = counts
         .into_iter()
-        .map(|(reader, (count, correctable))| (reader, count, correctable))
+        .map(|(reader, (count, marker))| (reader, count, marker))
         .collect();
     rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     let mut out = String::new();
-    for (reader, count, correctable) in rows {
-        let suffix = if correctable { " [Correctable]" } else { "" };
+    for (reader, count, marker) in rows {
+        let suffix = if marker.is_empty() {
+            String::new()
+        } else {
+            format!(" {marker}")
+        };
         let _ = writeln!(out, "{count:<width$}{reader}{suffix}");
     }
     let _ = writeln!(out, "--");
@@ -329,19 +438,21 @@ fn render_json(reports: &[FileReport]) -> String {
                 .map(|offense| {
                     format!(
                         "{{\"severity\":{},\"message\":{},\"reader_name\":{},\"corrected\":{},\"correctable\":{},\
-                         \"location\":{{\"start_line\":{},\"start_column\":{},\"last_line\":{},\"last_column\":{},\
-                         \"length\":{},\"line\":{},\"column\":{}}}}}",
+                         \"unsafe_correction\":{},\"location\":{{\"start_line\":{},\"start_column\":{},\"last_line\":{},\"last_column\":{},\
+                         \"length\":{},\"line\":{},\"column\":{},\"byte_column\":{}}}}}",
                         json_string(offense.severity.name()),
                         json_string(&offense.message),
                         json_string(offense.reader),
                         offense.corrected,
                         offense.correctable(),
+                        offense.correctable() && offense.unsafe_fix,
                         offense.line,
-                        offense.col,
+                        offense.char_col,
                         offense.last_line,
-                        offense.last_col,
+                        offense.last_char_col,
                         offense.range.len(),
                         offense.line,
+                        offense.char_col,
                         offense.col
                     )
                 })
@@ -350,8 +461,14 @@ fn render_json(reports: &[FileReport]) -> String {
                 .diff
                 .as_deref()
                 .map_or_else(String::new, |diff| format!(",\"diff\":{}", json_string(diff)));
+            let error = report
+                .error
+                .as_deref()
+                .map_or_else(String::new, |error| {
+                    format!(",\"error\":{}", json_string(error))
+                });
             format!(
-                "{{\"path\":{},\"offenses\":[{}]{diff}}}",
+                "{{\"path\":{},\"offenses\":[{}]{diff}{error}}}",
                 json_string(&report.path.display().to_string()),
                 offenses.join(",")
             )
@@ -399,23 +516,16 @@ fn sarif_uri(path: &std::path::Path) -> String {
     uri
 }
 
-/// The 1-based column, in Unicode code points, of the byte offset `byte` of `line`.
-fn char_column(line: &str, byte: usize) -> usize {
-    let mut end = byte.min(line.len());
-    while !line.is_char_boundary(end) {
-        end -= 1;
-    }
-    line[..end].chars().count() + 1
-}
-
 /// The SARIF region of `offense`: lines and code point columns, the end column exclusive. An
-/// offense spanning lines ends at the end of its last line, whose text is not kept.
+/// offense spanning lines ends at the end of its last line.
 fn sarif_region(offense: &Offense) -> String {
-    let line = offense.source_line.as_str();
-    let start = (offense.col as usize).saturating_sub(1);
-    let start_column = char_column(line, start);
+    let start_column = offense.char_col;
     if offense.last_line == offense.line {
-        let end_column = char_column(line, start + offense.range.len()).max(start_column);
+        let end_column = if offense.range.is_empty() {
+            start_column
+        } else {
+            offense.last_char_col.saturating_add(1).max(start_column)
+        };
         format!(
             "{{\"startLine\":{},\"startColumn\":{start_column},\"endLine\":{},\"endColumn\":{end_column}}}",
             offense.line, offense.line
@@ -509,6 +619,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn offense(line: u32, col: u32, len: usize, source_line: &str, correctable: bool) -> Offense {
+        let column = |byte: usize| {
+            let mut end = byte.min(source_line.len());
+            while !source_line.is_char_boundary(end) {
+                end -= 1;
+            }
+            u32::try_from(source_line[..end].chars().count() + 1).expect("short line")
+        };
+        let start = (col as usize).saturating_sub(1);
         Offense {
             reader: "Layout/Thing",
             severity: Severity::Convention,
@@ -516,9 +634,13 @@ mod tests {
             range: 0..len,
             line,
             col,
+            char_col: column(start),
             last_line: line,
             last_col: col,
+            last_char_col: column((start + len).saturating_sub(1).max(start)),
             source_line: source_line.to_owned(),
+            excerpt_start: 0,
+            unsafe_fix: false,
             fix: correctable.then(|| vec![Edit::remove(0..len)]),
             corrected: false,
         }
@@ -530,6 +652,7 @@ mod tests {
             offenses,
             diff: None,
             error: None,
+            unsettled: Vec::new(),
         }
     }
 
@@ -544,6 +667,7 @@ mod tests {
             offenses: 1,
             corrected: 0,
             correctable: 1,
+            unsafe_correctable: 0,
             remaining: 1,
         };
         assert_eq!(
@@ -555,6 +679,7 @@ mod tests {
             offenses: 4,
             corrected: 2,
             correctable: 0,
+            unsafe_correctable: 0,
             remaining: 2,
         };
         assert_eq!(
@@ -612,6 +737,90 @@ mod tests {
         assert_eq!(
             blank,
             "t.lua:1:1: C: [Correctable] Layout/Thing: Bad thing.\n"
+        );
+    }
+
+    #[test]
+    fn compact_and_github_formats() {
+        let mut warning = offense(2, 5, 3, "\u{e9}\u{e9}x = abc", false);
+        warning.reader = "Lint/Syntax";
+        warning.severity = Severity::Warning;
+        warning.message = "Bad: 100%, really.\nYes".to_owned();
+        let mut fixed = offense(1, 1, 1, "x", true);
+        fixed.corrected = true;
+        let mut failed = report("b,c.lua", vec![]);
+        failed.error = Some("cannot read b,c.lua".to_owned());
+        let reports = vec![
+            report("a.lua", vec![fixed, warning, offense(3, 1, 1, "y", true)]),
+            failed,
+        ];
+        assert_eq!(
+            render(Format::Compact, &reports, false),
+            "a.lua:2:3: warning: Lint/Syntax: Bad: 100%, really.\nYes\n\
+             a.lua:3:1: convention: Layout/Thing: Bad thing.\n"
+        );
+        assert_eq!(
+            render(Format::Github, &reports, false),
+            "::warning file=a.lua,line=2,col=3,endLine=2,endColumn=5,title=Lint/Syntax::\
+             Bad: 100%25, really.%0AYes\n\
+             ::notice file=a.lua,line=3,col=1,endLine=3,endColumn=1,title=Layout/Thing::Bad thing.\n\
+             ::error file=b%2Cc.lua::cannot read b,c.lua\n"
+        );
+        assert_eq!(
+            render(Format::Compact, &[report("a.lua", vec![])], false),
+            ""
+        );
+        let json = render(Format::Json, &reports, false);
+        assert!(
+            json.contains(
+                "{\"path\":\"b,c.lua\",\"offenses\":[],\"error\":\"cannot read b,c.lua\"}"
+            )
+        );
+    }
+
+    #[test]
+    fn unsafe_corrections_are_marked() {
+        let mut deletion = offense(1, 1, 1, "x", true);
+        deletion.unsafe_fix = true;
+        let reports = vec![report("a.lua", vec![deletion])];
+        assert_eq!(
+            render(Format::Quiet, &reports, false),
+            "Offenses:\n\na.lua:1:1: C: [Unsafe Correctable] Layout/Thing: Bad thing.\nx\n^\n\n\
+             1 file inspected, 1 offense detected, 1 offense autocorrectable with --fix-unsafe\n"
+        );
+        assert_eq!(
+            render(Format::Offenses, &reports, false),
+            "1  Layout/Thing [Unsafe Correctable]\n--\n1  Total in 1 file\n"
+        );
+        assert!(render(Format::Json, &reports, false).contains("\"unsafe_correction\":true"));
+    }
+
+    #[test]
+    fn columns_count_characters() {
+        let reports = vec![report(
+            "a.lua",
+            vec![offense(1, 6, 1, "\u{e9}\u{e9} = x", false)],
+        )];
+        assert!(render(Format::Quiet, &reports, false).starts_with(
+            "Offenses:\n\na.lua:1:4: C: Layout/Thing: Bad thing.\n\u{e9}\u{e9} = x\n   ^\n"
+        ));
+        let json = render(Format::Json, &reports, false);
+        assert!(json.contains(
+            "\"location\":{\"start_line\":1,\"start_column\":4,\"last_line\":1,\"last_column\":4,\
+             \"length\":1,\"line\":1,\"column\":4,\"byte_column\":6}"
+        ));
+    }
+
+    #[test]
+    fn excerpts_keep_the_carets_under_the_offense() {
+        let mut cut = offense(1, 1001, 3, "abc def", false);
+        cut.excerpt_start = 996;
+        cut.char_col = 1001;
+        let mut out = String::new();
+        write_offense(&mut out, "t.lua", &cut, false);
+        assert_eq!(
+            out,
+            "t.lua:1:1001: C: Layout/Thing: Bad thing.\nabc def\n    ^^^\n"
         );
     }
 

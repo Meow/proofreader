@@ -51,11 +51,11 @@ impl Reader for ShortFunction {
             .map(|config| config.get_usize("Max", 120));
         let mut finder = Finder {
             source,
-            placements: placements(&block),
+            placements: placements(block),
             max,
             found: Vec::new(),
         };
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for (range, replacement) in finder.found {
             let message = format!(
                 "Use the short function `{}` instead of `function`.",

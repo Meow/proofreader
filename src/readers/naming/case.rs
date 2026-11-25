@@ -67,6 +67,12 @@ pub enum NamingStyle {
     Pascal,
 }
 
+/// The values of the `EnforcedStyle` of the naming readers.
+pub const NAMING_STYLES: [&str; 3] = ["snake_case", "camelCase", "PascalCase"];
+
+/// The values of the `LocalFunctionStyle` of `Naming/MethodName`: `same` or a naming style.
+pub const LOCAL_FUNCTION_STYLES: [&str; 4] = ["same", "snake_case", "camelCase", "PascalCase"];
+
 impl NamingStyle {
     /// The style named by an `EnforcedStyle` value; unknown values mean `snake_case`.
     pub fn from_option(value: &str) -> Self {

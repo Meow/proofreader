@@ -37,6 +37,10 @@ impl Reader for SpaceAroundOperators {
         ]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("ConcatStyle", &["no_space", "space"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let source = ctx.source;
         let concat_spaced = ctx.option_str("ConcatStyle", "no_space") == "space";

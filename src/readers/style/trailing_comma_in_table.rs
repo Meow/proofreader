@@ -27,6 +27,10 @@ impl Reader for TrailingCommaInTable {
         vec![("EnforcedStyle", Yaml::String("no_comma".to_owned()))]
     }
 
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![("EnforcedStyle", &["no_comma", "comma"])]
+    }
+
     fn investigate(&self, ctx: &mut Context) {
         let comma_style = ctx.option_str("EnforcedStyle", "no_comma") == "comma";
         let tokens = significant_tokens(ctx.source);

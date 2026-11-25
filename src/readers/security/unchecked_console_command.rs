@@ -108,7 +108,7 @@ impl Reader for UncheckedConsoleCommand {
         let methods = ctx.option_str_list("PrivilegedMethods", DEFAULT_PRIVILEGED_METHODS);
         let checks = ctx.option_str_list("PermissionChecks", DEFAULT_PERMISSION_CHECKS);
         let mut found = Vec::new();
-        for handler in server_handlers(&block, source, "concommand.Add") {
+        for handler in server_handlers(block, source, "concommand.Add") {
             let mut finder = Finder {
                 source,
                 functions: &functions,

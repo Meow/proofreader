@@ -53,7 +53,7 @@ impl Reader for IncompleteDocumentation {
         let Ok(block) = parse(source) else {
             return;
         };
-        for function in functions(source, &block) {
+        for function in functions(source, block) {
             if function.local && !require_local {
                 continue;
             }

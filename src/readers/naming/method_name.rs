@@ -4,7 +4,9 @@ use yaml_rust2::Yaml;
 
 use crate::reader::{Context, Reader, Registration};
 use crate::readers::lint::scopes::{Resolution, resolve};
-use crate::readers::naming::case::{Case, NamingStyle, classify};
+use crate::readers::naming::case::{
+    Case, LOCAL_FUNCTION_STYLES, NAMING_STYLES, NamingStyle, classify,
+};
 use crate::readers::naming::declarations::{FunctionDefinition, function_definitions};
 use crate::source::Source;
 
@@ -38,6 +40,13 @@ impl Reader for MethodName {
         vec![
             ("EnforcedStyle", Yaml::String("snake_case".to_owned())),
             ("LocalFunctionStyle", Yaml::String("same".to_owned())),
+        ]
+    }
+
+    fn allowed_values(&self) -> Vec<(&'static str, &'static [&'static str])> {
+        vec![
+            ("EnforcedStyle", &NAMING_STYLES),
+            ("LocalFunctionStyle", &LOCAL_FUNCTION_STYLES),
         ]
     }
 

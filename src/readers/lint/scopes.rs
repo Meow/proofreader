@@ -92,6 +92,15 @@ impl Resolution<'_> {
             .filter(|reference| reference.token.start == offset)
     }
 
+    /// Whether the variable name whose token starts at byte `offset` is read or assigned as a
+    /// global: it is a reference that resolves to no local. Readers rewriting a call of a
+    /// library (`bit.band`, `math.sqrt`, `type`) check its root name with this, so a local
+    /// shadowing the library is left alone.
+    pub fn is_global_at(&self, offset: usize) -> bool {
+        self.reference_at(offset)
+            .is_some_and(|reference| reference.variable.is_none())
+    }
+
     /// The variable a read of `name` at byte `offset` would resolve to: the latest declaration
     /// of `name` that is visible there. A local is treated as visible from the end of its name,
     /// so the right-hand side of its own `local` statement counts as shadowed.
@@ -338,6 +347,11 @@ impl<'a> Resolver<'a> {
     fn descend(&mut self) -> Parse {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
+            let offset = self
+                .tokens
+                .get(self.pos)
+                .map_or(self.source.text.len(), |token| token.start);
+            super::ast::note_too_deep(offset);
             return Err(Unparsable);
         }
         Ok(())
@@ -706,23 +720,27 @@ impl<'a> Resolver<'a> {
     }
 
     /// Parses an expression: operands joined by binary operators, each with any unary prefixes,
-    /// optionally followed by the `? a : b` of a ternary.
+    /// optionally followed by the `? a : b` of a ternary. A chain of ternaries in alternatives
+    /// (`a ? b : c ? d : e`) is read in a loop, so that only real nesting counts towards the
+    /// depth limit.
     fn expression(&mut self) -> Parse {
         self.descend()?;
         loop {
-            while self.peek().is_some_and(is_unary_operator) {
+            loop {
+                while self.peek().is_some_and(is_unary_operator) {
+                    self.bump()?;
+                }
+                self.simple_expression()?;
+                if !self.peek().is_some_and(is_binary_operator) {
+                    break;
+                }
                 self.bump()?;
             }
-            self.simple_expression()?;
-            if !self.peek().is_some_and(is_binary_operator) {
+            if !self.eat(TokenKind::Question)? {
                 break;
             }
-            self.bump()?;
-        }
-        if self.eat(TokenKind::Question)? {
             self.expression()?;
             self.expect(TokenKind::TernaryColon)?;
-            self.expression()?;
         }
         self.ascend();
         Ok(())
@@ -965,6 +983,15 @@ mod tests {
 
     fn entry(name: &str, reads: usize, writes: usize) -> (String, usize, usize) {
         (name.to_owned(), reads, writes)
+    }
+
+    #[test]
+    fn long_ternary_chains_resolve() {
+        let chain = format!("local c = 1\nx = {}0\n", "c ? 1 : ".repeat(300));
+        assert_eq!(usage(&chain), vec![entry("c", 300, 0)]);
+        let deep = format!("local c = 1\nx = {}c{}\n", "(".repeat(300), ")".repeat(300));
+        assert!(resolve(&Source::new("t.lua", deep)).is_none());
+        assert!(super::super::ast::take_too_deep().is_some());
     }
 
     #[test]

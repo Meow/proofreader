@@ -80,7 +80,7 @@ impl Reader for UncheckedEntityInCallback {
             callbacks: Vec::new(),
             method_calls: Vec::new(),
         };
-        walk(&block, &mut collector);
+        walk(block, &mut collector);
         let checker = Checker {
             source,
             resolution: &resolution,

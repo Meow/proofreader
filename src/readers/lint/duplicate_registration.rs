@@ -43,7 +43,7 @@ impl Reader for DuplicateRegistration {
             |name: &str| FUNCTIONS.iter().any(|(function, _, _)| *function == name),
             |function, argument| format!("{}:{}", kind(function).0, argument.to_lowercase()),
         );
-        walk(&block, &mut finder);
+        walk(block, &mut finder);
         for duplicate in finder.duplicates {
             ctx.add_offense(
                 duplicate.range,
