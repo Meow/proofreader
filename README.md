@@ -9,27 +9,56 @@ hundreds of files in a few milliseconds.
 Besides GLua files (`.lua`) it inspects Flux's Lumen templates (`.lumen`), GLua with JSX-like markup in
 expression position; see [Lumen templates](#lumen-templates).
 
+## Installation
+
+proofreader needs Rust 1.88 or newer (`rustup update stable`). Install the latest version from GitHub:
+
+```
+cargo install --locked --git https://github.com/Meow/proofreader
+```
+
+or build it from a clone, which puts the binary at `target/release/proofreader`:
+
+```
+git clone https://github.com/Meow/proofreader
+cd proofreader
+cargo build --release          # or: cargo install --locked --path .
+```
+
+Then write a starting configuration in the root of a project with `proofreader --init` (every setting
+with its default) or `proofreader --init --style flux` (see [Example styles](#example-styles)).
+
 ## Usage
 
 ```
-proofreader [PATHS]... [OPTIONS]            PATHS default to "."
-  -a, --fix, --autocorrect       Fix correctable offenses in place
-      --diff                     With --fix: print the changes as a diff instead of writing files
+proofreader [OPTIONS] [PATHS]...            PATHS default to "."
+  -a, --fix, --autocorrect       Fix correctable offenses in place, leaving out unsafe corrections
+  -A, --fix-unsafe               Like --fix, and also apply unsafe corrections
+      --diff                     Print the corrections as a diff instead of writing files
       --stdin <PATH>             Inspect the source read from stdin as the file PATH
       --only <READERS>           Comma-separated reader names or departments
       --except <READERS>         Comma-separated reader names or departments to skip
-  -f, --format <FORMAT>          progress (default) | offenses | files | quiet | json | sarif
+  -f, --format <FORMAT>          progress (default) | offenses | files | quiet | compact | github | json | sarif
   -c, --config <PATH>            Use this configuration file for every target
       --show-readers [PATTERN]   List readers; with PATTERN also their effective configuration
-      --fail-level <SEVERITY>    Exit 1 only for offenses at or above this severity (default: info)
+      --show-config [FILE]       Print which configuration applies to FILE and every setting it gives
+      --init [--style <STYLE>]   Write a starting .proofreader.yml (default, flux, catwork, clockwork,
+                                 gmod, helix, stroustrup); never overwrites one
+      --fail-level <SEVERITY>    Exit 1 only for offenses at or above this severity: info (default),
+                                 refactor, convention, warning, error or fatal
+      --max-passes <N>           Maximum number of autocorrect passes per file (default: 25)
+      --force-exclusion          Skip the files given explicitly that AllReaders.Exclude matches
+      --strict                   Exit 2 when the configuration produces warnings
       --no-color                 Disable colors (also disabled by NO_COLOR or when stdout is not a terminal)
   -L, --list-target-files        Print the files that would be inspected and exit
-  -v, --version / -h, --help
+  -v, --version / -h, --help     (--help also lists the exit codes and the inline directives)
 ```
 
-Directories are walked recursively (hidden directories are skipped) for `.lua` and `.lumen` files, filtered by
-`AllReaders` `Include`/`Exclude`. Files given explicitly are always inspected, even when excluded or not
-ending in `.lua` or `.lumen`; a file ending in `.lumen` is read as a Lumen template, any other as GLua.
+Directories are walked recursively (hidden directories and symbolic links are skipped) for `.lua` and
+`.lumen` files, filtered by `AllReaders` `Include`/`Exclude`. Files given explicitly are always inspected,
+even when not ending in `.lua` or `.lumen`, and even when excluded unless `--force-exclusion` is given;
+editors, hooks and pre-commit pass every changed file, so they should pass `--force-exclusion`. A file
+ending in `.lumen` is read as a Lumen template, any other as GLua.
 
 Reader names in `--only`, `--except` and `--show-readers` are case-insensitive and may be a full name
 (`Layout/LineLength`), a department (`Layout`) or a bare name (`LineLength`). A reader named explicitly in
@@ -54,8 +83,21 @@ lib/foo.lua:14:12: C: [Correctable] Layout/TrailingWhitespace: Trailing whitespa
 
 With `--fix`, only the offenses that remain open are listed; the ones fixed during the run are counted in the
 summary (`1 file inspected, 4 offenses detected, 3 offenses corrected, 1 offense remaining`).
-Autocorrection runs up to 25 passes per file, re-inspecting after each pass, so fixes that conflict in one pass
-are applied in the next.
+Autocorrection runs up to 25 passes per file (`--max-passes`), re-inspecting after each pass, so fixes that
+conflict in one pass are applied in the next. When the last pass still applied fixes, the file is inspected
+once more, its remaining offenses are listed, and `Warning: autocorrection did not settle in <file>: <readers>
+undo each other` makes the run exit with 2. `--diff` prints the corrections as a unified diff instead of
+writing them; on its own it is a dry run of `--fix`.
+
+Corrections are safe or unsafe. `--fix` applies only the safe ones; `--fix-unsafe` (`-A`) applies all of them.
+An unsafe correction may change what the code does: today these are the deletions of
+`Lint/UnusedVariable` (an unused local function, a local and its assignments), whose safe alternative is the
+`_` prefix it still applies to parameters, loop variables and locals holding a call. Offenses that only
+`--fix-unsafe` corrects are marked `[Unsafe Correctable]` and counted as `N offenses autocorrectable with
+--fix-unsafe`.
+
+A file in which `Lint/Syntax` reports a `fatal` offense (code that does not parse) is not corrected at all:
+its offenses are reported, but no reader's fix is applied, since the layout of broken code is guesswork.
 
 ### Exit codes
 
@@ -63,7 +105,7 @@ are applied in the next.
 |------|---------|
 | 0 | No offenses at or above `--fail-level` remain (corrected offenses do not count). |
 | 1 | At least one uncorrected offense at or above `--fail-level`. |
-| 2 | Usage error, unknown reader, missing path, broken configuration or I/O error. |
+| 2 | Usage error, unknown reader, missing path, broken configuration, I/O error, a reader that crashed (`Lint/ReaderError`), autocorrection that did not settle, or, with `--strict`, a configuration warning. |
 
 ### Formats
 
@@ -73,15 +115,25 @@ The human-readable formats (`progress`, `quiet`, `offenses`, `files`) leave out 
   severity: `I`, `R`, `C`, `W`, `E`, `F`), then every remaining offense with its source line and carets, then the
   summary.
 - `quiet`: like `progress` without the progress line; prints nothing when no offense remains.
+- `compact`: one `path:line:column: severity: Reader: message` line per remaining offense, without source
+  lines, carets or summary; nothing when no offense remains. The cheapest format to read for tools and agents.
+- `github`: GitHub Actions workflow commands (`::warning file=lib/a.lua,line=3,col=5,endLine=3,endColumn=7,
+  title=Style/Not::Use ...`), which annotate the pull request: `error` for the error and fatal severities,
+  `warning` for warnings, `notice` for the rest; files that could not be read are `::error` lines.
 - `offenses`: remaining offense counts per reader, most frequent first, and a total.
 - `files`: the paths of the files with remaining offenses.
 - `json`: `{ "metadata": {...}, "files": [{ "path", "offenses": [...] }], "summary": {...} }`; every offense has
-  `severity`, `message`, `reader_name`, `corrected`, `correctable` and a `location`. Corrected offenses are
-  included, with `"corrected": true`.
+  `severity`, `message`, `reader_name`, `corrected`, `correctable`, `unsafe_correction` and a `location`
+  (`start_line`, `start_column`, `last_line`, `last_column`, `length` in bytes, `line`, `column`, and
+  `byte_column`). Corrected offenses are included, with `"corrected": true`. A file that could not be read or
+  written has an `error`, and with `--diff` each corrected file has its `diff`.
 - `sarif`: a SARIF 2.1.0 log for code scanning tools (GitHub code scanning and others): one rule per reader
   that reported, one result per uncorrected offense with `level` `error` (error, fatal), `warning` or
-  `note`, a relative `uri` and a region in Unicode code point columns; files that could not be read or
-  written become tool notifications.
+  `note`, a relative `uri` and a region; files that could not be read or written become tool notifications.
+  SARIF has no place for `--diff`, which it leaves out.
+
+Columns count characters (Unicode code points) in every format, as editors do; JSON adds the byte column as
+`byte_column`. Lines longer than 300 characters are shown as an excerpt of 300 characters around the offense.
 
 ### Standard input
 
@@ -90,12 +142,107 @@ file: its configuration is the one for that path (which need not exist), and a p
 makes it a Lumen template. No other paths may be given. The report uses the selected format. With `--fix`,
 only the corrected source (or the unchanged source) is written to standard output, so editors can pipe a
 buffer through `proofreader --stdin "$FILE" --fix`; `--fix --diff` prints the diff and the report instead.
-The exit status is the usual one for the offenses that remain.
+With `--force-exclusion`, a path that `AllReaders.Exclude` matches is reported clean and, with `--fix`,
+passed through unchanged. The exit status is the usual one for the offenses that remain.
+
+### Editors, pre-commit and CI
+
+[nvim-lint](https://github.com/mfussenegger/nvim-lint) and similar linters read the `compact` format from
+standard input:
+
+```lua
+require('lint').linters.proofreader = {
+  cmd = 'proofreader',
+  stdin = true,
+  args = { '--force-exclusion', '-f', 'compact', '--stdin', function() return vim.api.nvim_buf_get_name(0) end },
+  stream = 'stdout',
+  ignore_exitcode = true,
+  parser = require('lint.parser').from_pattern(
+    '[^:]+:(%d+):(%d+): (%a+): ([^:]+: .+)', { 'lnum', 'col', 'severity', 'message' },
+    { error = vim.diagnostic.severity.ERROR, fatal = vim.diagnostic.severity.ERROR,
+      warning = vim.diagnostic.severity.WARN, convention = vim.diagnostic.severity.HINT,
+      refactor = vim.diagnostic.severity.HINT, info = vim.diagnostic.severity.INFO }),
+}
+```
+
+[conform.nvim](https://github.com/stevearc/conform.nvim) formats a buffer with the safe corrections:
+
+```lua
+require('conform').formatters.proofreader = {
+  command = 'proofreader',
+  args = { '--force-exclusion', '--fix', '--stdin', '$FILENAME' },
+  stdin = true,
+  exit_codes = { 0, 1 },
+}
+```
+
+A VS Code task with a problem matcher for the `compact` format (`convention`, `refactor` and `info` fall back
+to the matcher's `severity`):
+
+```json
+{
+  "label": "proofreader",
+  "type": "shell",
+  "command": "proofreader -f compact .",
+  "problemMatcher": {
+    "owner": "proofreader",
+    "fileLocation": ["relative", "${workspaceFolder}"],
+    "severity": "info",
+    "pattern": {
+      "regexp": "^(.+):(\\d+):(\\d+): (\\w+): (\\S+): (.*)$",
+      "file": 1, "line": 2, "column": 3, "severity": 4, "code": 5, "message": 6
+    }
+  }
+}
+```
+
+The repository is a [pre-commit](https://pre-commit.com) hook repository (`.pre-commit-hooks.yaml`):
+`proofreader` runs `proofreader --force-exclusion -f quiet` on the staged `.lua` and `.lumen` files, and
+`proofreader-fix` applies the safe corrections first (`--fix`):
+
+```yaml
+repos:
+  - repo: https://github.com/Meow/proofreader
+    rev: master
+    hooks:
+      - id: proofreader
+```
+
+A GitHub Actions job that annotates pull requests:
+
+```yaml
+jobs:
+  proofreader:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install --locked --git https://github.com/Meow/proofreader
+      - run: proofreader --strict -f github .
+```
+
+(`-f sarif > proofreader.sarif` with `github/codeql-action/upload-sarif` puts the offenses in code scanning
+instead.)
 
 ## Configuration
 
 Each file is checked with the nearest `.proofreader.yml` found in its directory or one of its ancestors
 (`--config` forces one file for everything). Without any configuration file, the built-in defaults apply.
+`proofreader --init` writes a starting file (`--style` picks one of the [example styles](#example-styles)), and
+`proofreader --show-config path/to/file.lua` prints which file applies to a path, the files it inherits from
+and every setting it gives.
+
+The nearest file replaces the ones above it: a `.proofreader.yml` in a plugin folder does not inherit the
+project's settings unless it says so, so a nested file that only adds to the project style starts with
+`inherit_from`:
+
+```yaml
+# plugins/legacy/.proofreader.yml
+inherit_from: ../../.proofreader.yml
+
+Naming/VariableName:
+  EnforcedStyle: camelCase
+```
 
 ```yaml
 inherit_from: ../.proofreader.yml        # a string or a list, relative to this file
@@ -125,8 +272,16 @@ Layout/LineLength:
 - Patterns are relative to the directory of the file that declares them. `**` matches any number of directories,
   `*` and `?` never match `/`, and a pattern without wildcards also matches everything below that directory.
   Patterns starting with `**` match anywhere.
-- An unknown reader section produces `Warning: unrecognized reader Foo/Bar found in <file>` on stderr; invalid
-  values (an unknown severity, a non-boolean `Enabled`, a bad glob) are errors.
+- `AllReaders.Severity` is the default severity of every reader but `Lint/Syntax`, which stays `fatal` unless
+  its own section sets a severity.
+- Names and values nothing reads produce warnings on stderr, each with the nearest valid name when there is
+  one: an unknown reader or department section (`Warning: unrecognized reader Style/StringLiteral found in
+  <file>; did you mean Style/StringLiterals?`), an unknown key in a section (`EnforcedStlye`, `Exlude`), a
+  value of the wrong type (`Max: eighty`, `Max: -1`, `AllowURI: 'yes'`) and a value that an enumerated option
+  such as `EnforcedStyle` does not know (`dobule_quotes`). Names compare case-sensitively, so
+  `style/stringliterals` is unknown (and suggested as `Style/StringLiterals`). `--strict` makes any warning
+  exit with 2, for CI. Invalid values of the standard keys (an unknown severity, a non-boolean `Enabled`, a bad
+  glob) are errors.
 - `proofreader --show-readers Layout` prints the effective configuration of the matching readers as YAML.
 
 ### Disabling readers inline
@@ -152,7 +307,10 @@ local label = "it's \"fine\"";
 ```
 
 - Without a reader list a directive applies to every reader. Readers are separated by commas or spaces and
-  named as in `--only`: a full name, a department or a bare name, case-insensitively. Unknown names are ignored.
+  named as in `--only`: a full name, a department or a bare name, case-insensitively. `Lint/InvalidDirective`
+  reports names that match no reader (`Style/Nott`) and comments starting with `proofreader-` that are no
+  directive (`-- proofreader-disable-line: Style/Not`, `-- proofreader-disabled`), with the nearest valid
+  spelling; such comments switch nothing off.
 - Text after a `--` standing on its own is an explanation.
 - Any comment form works: `--`, `//`, `--[[ ]]` and `/* */`.
 - An offense is switched off when it *starts* in a disabled range or on a disabled line (the position shown in
@@ -163,11 +321,16 @@ local label = "it's \"fine\"";
 
 ## Readers
 
-`proofreader --show-readers` lists every reader with its description (92 in total, 17 of them disabled by default);
+`proofreader --show-readers` lists every reader with its description (93 in total, 17 of them disabled by default);
 `proofreader --show-readers PATTERN` (a name, a department or a bare name) prints the effective
 configuration of the matching readers as YAML, which is a good starting point for a
 `.proofreader.yml`. Every reader also accepts `Enabled`, `Severity`, `AutoCorrect`, `Include` and
-`Exclude`. "Fix" says whether the reader autocorrects with `--fix`.
+`Exclude`. "Fix" says whether the reader autocorrects with `--fix` ("unsafe": only with `--fix-unsafe`).
+
+The readers that need the syntax tree skip files that do not parse (`Lint/Syntax` reports why) and files whose
+code nests more than 100 levels deep (brackets, blocks and functions inside each other; a long chain of `..`
+or of ternaries counts as one level). For such a deep file `Lint/Syntax` reports an `info` offense, `The code
+nests too deeply to be inspected; <readers> skipped the file.`, naming the readers that skipped it.
 
 ### Layout
 
@@ -186,7 +349,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Layout/IndentationStyle` | Spaces, not tabs, in leading indentation; with `EnforcedStyle: tabs`, tabs for whole levels followed by fewer than `IndentationWidth` alignment spaces. `Layout/IndentationWidth` and `Layout/IndentationConsistency` count a tab as reaching the next multiple of their width (keep it equal to `IndentationWidth`); `Layout/LineLength` does not break tab-indented lines. | convention | yes | `EnforcedStyle: spaces` (or `tabs`), `IndentationWidth: 2` (spaces per tab) |
 | `Layout/IndentationWidth` | The first body line of a block is `Width` deeper than its opener line; closers align with the opener line. A tab counts as reaching the next multiple of `Width` columns; the fix re-indents with spaces. | convention | yes | `Width: 2` |
 | `Layout/LeadingCommentSpace` | A space after `--`, `---` and `//` (block comments and dash-only lines exempt). | convention | yes | |
-| `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`??`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. The parameters of a short function (`\|a, b\|`) are never split. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
+| `Layout/LineLength` | Lines are at most `Max` characters. The fix only changes whitespace and picks, per line, the first of these that fits: break after the `=` of an assignment or table field (value one level deeper); unfold the call argument list or table constructor holding the overrun (outermost first, a last table argument hugged as `f(a, {`): one item per line, the closer on its own line, lines of a trailing multi-line function re-indented; break a chain after its last `,`/`or`/`??`/`and`/`..` that fits (before the operator when the chain already leads with it; `if`/`elseif`/`while` conditions continue under the first condition), or before the `:` of a chained method call. The parameters of a short function (`\|a, b\|`) are never split. A step that does not fit at once is taken when the following passes can finish it. Comment-only lines, overruns inside a trailing comment, aligned lines and lines without a break point stay uncorrected, and so do lines with more than 1,000 code tokens or more than 100 groups nested on them, whose message ends in `(too complex to break automatically)`. | convention | yes | `Max: 120`, `AllowURI: true`, `IgnoreComments: false`, `IndentationWidth: 2` (indentation of inserted lines) |
 | `Layout/SpaceAfterComma` | A space after every comma followed by code. | convention | yes | |
 | `Layout/SpaceAfterNot` | No space between `!` (or the bitwise not `~`) and its operand. | convention | yes | |
 | `Layout/SpaceAroundOperators` | One space around binary operators and `=`; none around `..`. The compound assignment operators (`+=`), the bit operators, `??`, the `?` and `:` of a ternary and the `->` of a short function are binary operators; `?.` takes no space on either side. Unary `-`, `#`, `!`, `~`, `not` are not binary. | convention | yes | `ConcatStyle: no_space` (or `space`), `AllowForAlignment: true` (extra spaces before an operator that lines up with the same operator on an adjacent line) |
@@ -207,7 +370,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Style/AndOr` | `and`/`or` instead of `&&`/`\|\|`; with `EnforcedStyle: symbols`, `&&`/`\|\|` instead of `and`/`or`. | convention | yes | `EnforcedStyle: keywords` (or `symbols`) |
 | `Style/BitOperators` | Calls of the global `bit` library that a bit operator of LuaJIT 3.0 writes directly: `bit.band(a, b, ...)` to `a & b & ...`, `bor` to `\|`, `bxor` to `~`, `lshift`/`rshift`/`arshift` to `<<`/`>>`/`~>>`, `bnot(a)` to `~a`; see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/CallParentheses` | Parentheses around the single string or table literal argument of a call: `f('x')`, `f({ 1 })`, `obj:m('x')`. The `omit` styles write `require 'x'` and `f { 1 }` (one space), and keep parentheses separated from their argument by a line break. Calls with comments in the way are not corrected. Disabled by default (Flux writes `require_relative 'x'` and `class 'X'` on purpose). | convention | yes | `EnforcedStyle: always` (or `omit`, `omit_for_strings`, `omit_for_tables`) |
-| `Style/CommentStyle` | Comment markers: with `lua`, `//` → `--` (`///` → `---`) and `/* */` → `--[[ ]]` (with `=` levels when the body holds `]]`); with `c`, `--` → `//` and `--[[ ]]` → `/* */`, except doc comments (a run of comment-only lines containing a `---` line, kept for LDoc/EmmyLua and the documentation readers) and block comments containing `*/`. Lumen markup comments are never touched. | convention | yes | `EnforcedStyle: lua` (or `c`) |
+| `Style/CommentStyle` | Comment markers: with `lua`, `//` → `--` (`///` → `---`) and `/* */` → `--[[ ]]` (with `=` levels when the body holds `]]`); with `c`, `--` → `//` and `--[[ ]]` → `/* */`, except doc comments (a run of comment-only lines containing a `---` line, kept for LDoc/EmmyLua and the documentation readers) and block comments containing `*/`. A `//` followed by a long bracket (`//[[`) becomes `-- [[`, which stays a line comment. Lumen markup comments are never touched. | convention | yes | `EnforcedStyle: lua` (or `c`) |
 | `Style/CompoundAssignment` | `x = x op e` that a compound assignment writes once (`x += e`) for `+ - * / % ..` and the bit operators (not `^`, not the xor `~=`), when the target is a name, a field of a name or an index of a name by a name or a literal; see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/DocumentationMethod` | Every named function definition is directly preceded by a doc comment starting with `---`. | convention | no | `RequireForLocalFunctions: false` |
 | `Style/IncompleteDocumentation` | A function whose doc comment has a parameter or return tag documents every named parameter (names starting with `_` exempt) and has an `@return` (or `@treturn`) when its own body returns a value other than `nil`. Local functions are skipped unless `RequireForLocalFunctions` is set. Disabled by default. | convention | no | `RequireForLocalFunctions: false`, `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
@@ -217,7 +380,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Style/NumericSeparators` | Decimal integer literals of at least `MinDigits` digits with `_` every three digits from the right (`1_000_000`), and no literal with `_` groups other than threes (`1_0000`); hexadecimal literals, fractions, exponents and suffixes are left alone. The fix keeps aligned columns after the literal in place. Disabled by default. | convention | yes | `MinDigits: 5` |
 | `Style/ParenthesesAroundCondition` | No parentheses wrapping the whole condition of `if`, `elseif`, `while` or `until`; with `EnforcedStyle: require` (vanilla GMod's `if ( x ) then`), every such condition is one parenthesised expression (`if (a) and (b) then` is wrapped as a whole). | convention | yes | `EnforcedStyle: omit` (or `require`) |
 | `Style/PreferredLocalAlias` | Uses of a path such as `table.insert` after a file-level alias of it (`local insert = table.insert`; a path starting with a global, alias never reassigned) where the alias is not shadowed and the path's first name is still the global. Uses that are assigned to, chains not starting at the global (`x.table.insert`) and paths assigned anywhere in the file are exempt. The fix replaces the path with the alias. | convention | yes | |
-| `Style/Semicolon` | No semicolons, empty statements (`;;`) included (a `;` between table fields becomes a comma; a `;` between statements of a function inside a table stays a statement separator and is removed). With `EnforcedStyle: require` (Clockwork), every statement ending a line ends with `;`, including the `end` of blocks and functions (`end;`, `end);`), while lines ending in `then`, `do`, `else` or a function header take none; stray semicolons (`then;`, `;;`) are removed. | convention | yes | `EnforcedStyle: omit` (or `require`) |
+| `Style/Semicolon` | No semicolons, empty statements (`;;`) included (a `;` between table fields becomes a comma; a `;` between statements of a function inside a table stays a statement separator and is removed; a `;` before a `(` that starts the next statement, on the same line or a later one, stays, as removing it would make a call). With `EnforcedStyle: require` (Clockwork), every statement ending a line ends with `;`, including the `end` of blocks and functions (`end;`, `end);`), while lines ending in `then`, `do`, `else` or a function header take none; stray semicolons (`then;`, `;;`) are removed. | convention | yes | `EnforcedStyle: omit` (or `require`) |
 | `Style/ShortFunction` | Anonymous functions whose body is a single `return` of one expression on one line, without `...` among their parameters, written as a short function: `\|a, b\| -> a + b`, `a -> a`, `\|\| -> 1`; left alone where the expression would read differently or the line would exceed the `Max` of `Layout/LineLength` (when enabled); see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
 | `Style/StringLiterals` | Single quotes, unless the string contains a single quote; long strings exempt. | convention | yes | `EnforcedStyle: single_quotes` (or `double_quotes`) |
 | `Style/TernaryOperator` | `c and a or b` written as the ternary `c ? a : b` when `a` is a literal that cannot be `false` or `nil` (a number, a string, a table constructor or `true`) and the `or` is a whole value (of a `local`, an assignment, a `return`, a table field, a call argument or parentheses); see [the rules](#readers-that-write-the-extensions). Disabled by default. | convention | yes | |
@@ -239,6 +402,7 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/FormatArgumentCount` | A call of a function in `Functions` (`string.format(fmt, ...)`, `Format(fmt, ...)`) or the method form on a string literal (`('%d'):format(n)`) whose literal format takes more arguments than given (a "bad argument" error at run time) or fewer (the extra ones are ignored). Every `%[-+ #0]*[0-9]*(.[0-9]*)?[cdiouxXeEfgGqsaA]` conversion takes one argument and `%%` none; formats with any other `%` sequence or a numeric escape are skipped. When the last argument is a call or `...`, only the arguments before it count and only too many are flagged. Files that do not parse are skipped. | warning | no | `Functions: [string.format, Format]` |
 | `Lint/GlobalAssignment` | Assignments to a plain name that resolves to no local (`count = 0`) and `function name()` statements with a single-name path, inside a function body: almost always a missing `local`. Exempt are file-level writes (unless `AllowFileLevel` is `false`) and in-function writes of a name also assigned at file level in the same file, names in `AllowedGlobals`, names without lowercase letters (`CW_CONVAR_LOG`) with `AllowUppercase`, and globals the function reads before or in the statement of its first write there (`local old = can`, `if !sfs then sfs = ... end`, `n = n + 1`). Each global is reported once per function (the innermost one), at its first write. Files that do not parse are skipped. | warning | no | `AllowFileLevel: true`, `AllowUppercase: true`, `AllowedGlobals: [GM, GAMEMODE, ENT, SWEP, EFFECT, TOOL, PANEL, PLUGIN, SCHEMA, Schema, ITEM, FACTION, CLASS, ATTRIBUTE, LANGUAGE, CHAT_CLASS, PACKAGE, CMD, ROLE, THEME, SKILL, PLAYER]` |
 | `Lint/HookName` | The hook name argument of a call of one of the `Functions` (the number is the 1-based position of the name) that can never name a hook: an empty or blank string, a string with leading or trailing whitespace (`'Think '`), or a literal that is not a string (`hook.Run(123)`, `nil`, `true`, a table or a function). Names built at run time (variables, fields, calls, concatenations) are left alone, as in GLuaLS's `gmod-invalid-hook-name`. Files that do not parse are skipped. | warning | no | `Functions: { hook.Add: 1, hook.Remove: 1, hook.Run: 1, hook.Call: 1, gamemode.Call: 1 }` |
+| `Lint/InvalidDirective` | [Inline directives](#disabling-readers-inline) that do nothing they seem to: a comment starting with `proofreader-` whose action is misspelled (`-- proofreader-disable-lines`, `-- proofreader-disable-line: Style/Not`), and names in a directive's reader list that match no reader or department (`Style/Nott`), each with the nearest valid spelling. | warning | no | |
 | `Lint/LiteralAsCondition` | Conditions whose outcome their literals decide: always truthy (`true`, numbers, `0` and negative numbers included, strings, tables, functions) or always falsy (`false`, `nil`), through parentheses, `not`/`!`, `and`, `or`, `??` and ternaries (`x or true` is always truthy, `x and false` always falsy). Checked are `if` and `elseif` conditions, ternary conditions, `while` conditions that are always falsy (`while true do` is allowed), and the first argument of the `AssertFunctions` when it always passes (`assert(false, message)` raises on purpose and is allowed). `repeat ... until` is left alone (`until false` and `until true` are idioms). Files that do not parse are skipped. | warning | no | `AssertFunctions: [assert]` |
 | `Lint/NetMessageMismatch` | The `net.Read*` calls of a `net.Receive` handler that cannot read what a `net.Start` ... send of the same message in the same file writes (names compared case-insensitively): a different number of values, a value read with another function than it is written with (`(out of order)` when that function reads another value of the message), or an integer read with another literal bit count than it is written with (`net.WriteUInt(x, 8)` and `net.ReadUInt(16)`). Writes are the payload calls of the statements after a `net.Start` with a literal name up to the send (`net.Send`, `net.SendOmit`, `net.SendPAS`, `net.SendPVS`, `net.Broadcast`, `net.SendToServer`) in the same block; reads are those of the handler, a function literal or a function the file defines once under the name it passes. Functions nested in either do not count. A call in a branch or loop, in the right operand of `and`/`or`/`??`, in a ternary branch or after `?.` matches any number of values of its kind. Only a sender and receiver in opposite realms the file makes certain (a `cl_`/`sv_` file, a `client`/`server` directory, or a `CLIENT`/`SERVER` branch or guard) are compared, the send going to the receiver's realm. A payload is unknown, and the message skipped, when it calls a `net` function that is no payload function, a function or method whose name contains `Write` or `Read`, a parameter, or a function of the file that uses the net library. A receiver matching any sender of its message is accepted; otherwise the first mismatch with the closest sender is reported. Files that do not parse are skipped. | warning | no | |
 | `Lint/NonLiteralAssertMessage` | `assert(condition, message)` whose message is not a literal, a name, a field or an index, so it is built even when the assertion passes. Disabled by default. | warning | no | |
@@ -248,14 +412,14 @@ configuration of the matching readers as YAML, which is a good starting point fo
 | `Lint/RemoveInForwardLoop` | `table.remove(t, i)` inside a loop walking `t` forward with the index `i`, which skips the element after each removed one: numeric `for i = start, limit do` loops without a step or with a positive numeric literal step whose limit mentions `#t` (`for i = 1, #t do`), and `for i, v in ipairs(t) do` and `for k, v in pairs(t) do` loops. The removal must name the walked table (the same name or field chain of the same variable) and pass exactly the loop variable (a local shadowing it does not count); removals inside functions defined in the loop are ignored, and so is a removal followed in its block, or an enclosing block inside the loop, by `return`, `goto` or a `break` leaving the walked loop. Files that do not parse are skipped. | warning | no | |
 | `Lint/SelfAssignment` | Assignments of a name, field or index to itself (`x = x`, `a.b = a.b`, `a[k] = a[k]`, `t['x'] = t.x`), including one target of a multiple assignment whose value in the same position is itself (`a, b = a, c` flags `a`; the swap `a, b = b, a` is fine). Field and index chains must start at a name and contain no calls, with literal or plain-name keys; `local x = x` (caching a global or upvalue) is not flagged. Files that do not parse are skipped. | warning | no | |
 | `Lint/ShadowedLibrary` | Locals, parameters and loop variables named after a GMod library (`local file = ...`); `local render = render` is allowed. | warning | no | `Libraries: [player, team, file, table, sound, string, math, util, net, hook, timer, render, surface, draw, ents, game, engine, input, gui, vgui, http, os, debug, bit]` |
-| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. When none of those is found, the file is parsed and the first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``): code after a `return` in the same block, an expression standing as a statement, assigning to a call, a missing `=` or `,`, and so on. The syntax extensions of LuaJIT 3.0 are valid syntax (see `Lint/ExtendedSyntax`). | fatal | no | |
+| `Lint/Syntax` | Unterminated strings and block comments, stray characters, the first unbalanced bracket, `end` or `until`, and the first piece of malformed Lumen markup. When none of those is found, the file is parsed and the first token the grammar rejects is reported (``Unexpected `y`; expected `then`.``): code after a `return` in the same block, an expression standing as a statement, assigning to a call, a missing `=` or `,`, a call whose `(` starts a line (`f` then `(g)()` on the next line, which LuaJIT rejects as ambiguous), and so on. A file that is not valid UTF-8 gets `File is not valid UTF-8 (byte N).` and is inspected with replacement characters (whose columns can differ from the file's) but never corrected. The syntax extensions of LuaJIT 3.0 are valid syntax (see `Lint/ExtendedSyntax`). Also reports, as `info`, files nesting too deeply for the readers that parse them. | fatal | no | |
 | `Lint/UnbalancedAssignment` | Assignments with more targets than values (`local a, b = 1`: `b` is `nil`), unless the last value is a call, `...` or `nil`, and values beyond the number of targets (`local a = 1, 2`), which are discarded. | warning | no | |
 | `Lint/UncheckedEntityInCallback` | Method calls (`e:Method(...)`) on a captured entity inside a deferred callback, a function literal passed to one of the `Functions` (the number is the 1-based position of the callback argument; closures nested in it count), when the callback does not check `IsValid(e)` or `e:IsValid()` anywhere before the call (by source position): the entity may have been removed by then ("Tried to use a NULL entity!"). `e` is a local, parameter or loop variable declared outside the callback that holds an entity: `self` in a method or function field of one of the `EntityTables` (`function ENT:Think()`, `ENT.Use = function(self)`), a variable named one of the `EntityNames`, or a local initialized from a call of one of the `EntityFunctions`; a local initialized from one of the `AlwaysValidFunctions` never counts. Field accesses and arguments are not checked; each variable is reported once per callback, at its first unchecked call. Files that do not parse are skipped. | warning | no | `Functions: { timer.Simple: 2, timer.Create: 4 }`, `EntityTables: [ENT, SWEP, EFFECT, PANEL, TOOL]`, `EntityNames: [ply, player, pl, client, ent, entity, target, victim, attacker, inflictor, owner, weapon, wep, npc, vehicle, ragdoll, prop, panel]`, `EntityFunctions: [ents.Create, ents.CreateClientProp, Entity, player.GetBySteamID, player.GetBySteamID64, vgui.Create]`, `AlwaysValidFunctions: [LocalPlayer]` |
 | `Lint/UndefinedDocParam` | Parameter tags in a function's doc comment (`@param name`, `@param name=default`, `---@param name?`, `@tparam type name`, `TypedParamTags` aliases such as `@string name`) that name no parameter of the function; methods have an implicit `self`, `...` matches a vararg. The doc comment is the `--` comment lines directly above the line of the `function` keyword, when it is the first function on its line. Files that do not parse are skipped. | warning | no | `TypedParamTags: [string, number, int, bool, tab, func, thread]` |
 | `Lint/UnknownDocTag` | Tags (`@name` starting the text of a `--` line comment) that are not in `KnownTags`. Disabled by default. | warning | no | `KnownTags` (EmmyLua/LuaLS, LDoc, GLuaLS and Flux tags; see `--show-readers Lint/UnknownDocTag`) |
 | `Lint/UnreachableCode` | Statements after one that always leaves the block: `break`, `continue`, `goto`, `return`, a call of a terminating function, a `do ... end` that always leaves, an `if` with an `else` whose every branch leaves. A `::label::` makes the code after it reachable again; each unreachable run is reported once. | warning | no | `TerminatingFunctions: [error]` |
 | `Lint/UnusedSelf` | Methods (`function a:b()`) that never read their implicit `self` and could be defined with `.`. Disabled by default: GMod hooks and scripted classes are methods by convention. | warning | no | |
-| `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix removes an unused local with every assignment to it: a statement binding only that name is deleted (with its line when alone on it, and a removed function's doc comment), one binding several names loses the name and its value. Only values without side effects are removed; a local whose declaration or assignments hold a call (`local margin = SScaleMin(20 / 3)`) is prefixed with `_` instead, and so are parameters and loop variables: at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. | warning | yes | `AllowUnusedParameters: false` (when `true`, parameters are never flagged) |
+| `Lint/UnusedVariable` | Locals, `local function`s, parameters and loop variables that are never read, including ones only ever assigned to (`local x; x = 1`). A Lumen component tag (`<Row />`) reads the variable it names. Names starting with `_`, `self` and `...` are exempt; files that do not parse are skipped. The fix removes an unused local with every assignment to it: a statement binding only that name is deleted (with its line when alone on it, and a removed function's doc comment unless that comment starts on the first line of the file or holds a file-level tag such as `@module`, `@meta` or `@author`), one binding several names loses the name and its value. Removing code is an unsafe fix, which only `--fix-unsafe` applies. Only values without side effects are removed; a local whose declaration or assignments hold a call (`local margin = SScaleMin(20 / 3)`) is prefixed with `_` instead, and so are parameters and loop variables: at the declaration, at every assignment and in the matching `@param` tags of the function's doc comment, unless the prefixed name already appears in the variable's scope. Prefixing is safe. | warning | yes (removal unsafe) | `AllowUnusedParameters: false` (when `true`, parameters are never flagged) |
 
 ### Performance
 
@@ -271,11 +435,11 @@ defined in the file counts); functions nested in a hot path are part of it.
 | Reader | Checks | Severity | Fix | Options (defaults) |
 |--------|--------|----------|-----|--------------------|
 | `Performance/ConstantObjectInHotPath` | Calls of the constructors in `Functions` with only constant arguments (`Color(0, 0, 0, 200)`, `Vector(0, 0, 1)`; literals, parentheses and operators over literals) inside a hot path, which build the same object every frame or tick; a local outside the hot path could hold it. Calls without arguments are exempt. Files that do not parse are skipped. | warning | no | `Functions: [Color, Vector, Angle]` |
-| `Performance/DistanceComparison` | A call of one of the `Methods` (`pos:Distance(other) < 100`) or `Functions` (`math.sqrt(x) <= y`) standing as an operand of a comparison, where the square root is wasted: the squared method (`DistToSqr`) or the function's argument compared with the squared bound gives the same answer. A distance inside a larger expression (`a:Distance(b) + c:Distance(d) < 100`) is left alone. The fix squares the call and the bound: a numeric literal becomes its square (`== 100` to `== 10000`), a name or field is multiplied by itself (`range * range`), anything else is raised to the second power (`self:GetRange() ^ 2`, `(range + 1) ^ 2`); two compared square roots are squared together, and a negated literal bound is not corrected. Files that do not parse are skipped. | warning | yes | `Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }`, `Functions: [math.sqrt]` |
-| `Performance/GetAllLoop` | Generic `for` loops over the table a function in `Iterators` builds (`for _, ply in ipairs(player.GetAll()) do`, also with `pairs(...)` or `next, player.GetAll()`), which the matching iterator walks from a cached table instead of building a new one on every call. Tables kept in a variable, or used other than as the loop's table, are left alone. The fix writes `for _, ply in player.Iterator() do`, unless a comment lies among the loop's iterator expressions. Files that do not parse are skipped. | warning | yes | `Iterators: { player.GetAll: player.Iterator, ents.GetAll: ents.Iterator }` |
-| `Performance/SequentialPairs` | `pairs(t)` (or `next, t`) in a generic `for` loop when `t` is known to be a sequence: `ipairs` visits the same entries in order, and LuaJIT compiles it where it cannot compile `pairs`. A sequence is a table constructor of positional values that cannot be `nil` (literals, tables, functions, operators other than `and`), a call of one of the `SequentialFunctions`, or a local declared as one of those, never assigned again, and otherwise only read (`#t`, `t[k]`, `t.name`), passed to `pairs`, `ipairs`, `next` or one of the `SafeFunctions`, or grown and shrunk with `table.insert(t, v)`, `t[#t + 1] = v` and `table.remove` outside the loop. The fix writes `ipairs(t)`. Files that do not parse are skipped. | warning | yes | `SequentialFunctions: [player.GetAll, player.GetHumans, player.GetBots, team.GetPlayers, ents.GetAll, ents.FindByClass, ents.FindByModel, ents.FindByName, ents.FindInBox, ents.FindInSphere, ents.FindInCone, ents.FindInPVS, ents.FindAlongRay, string.Explode, string.Split, string.ToTable, table.GetKeys, table.ClearKeys, file.Find]`, `SafeFunctions: [unpack, table.unpack, table.concat, table.sort, table.Count, table.HasValue, table.KeyFromValue, table.Random, table.IsEmpty, table.Copy, table.GetKeys, table.maxn, istable, type, tostring, print, PrintTable]` |
+| `Performance/DistanceComparison` | A call of one of the `Methods` (`pos:Distance(other) < 100`) or `Functions` (`math.sqrt(x) <= y`) standing as an operand of a comparison, where the square root is wasted: the squared method (`DistToSqr`) or the function's argument compared with the squared bound gives the same answer. A distance inside a larger expression (`a:Distance(b) + c:Distance(d) < 100`) is left alone. The fix squares the call and the bound: a numeric literal becomes its square (`== 100` to `== 10000`), a name or field is multiplied by itself (`range * range`), anything else is raised to the second power (`self:GetRange() ^ 2`, `(range + 1) ^ 2`); two compared square roots are squared together, and a negated literal bound is not corrected. A function whose root name is a local there (`math` as a parameter) is left alone. Files that do not parse are skipped. | warning | yes | `Methods: { Distance: DistToSqr, Distance2D: Distance2DSqr, Length: LengthSqr, Length2D: Length2DSqr }`, `Functions: [math.sqrt]` |
+| `Performance/GetAllLoop` | Generic `for` loops over the table a function in `Iterators` builds (`for _, ply in ipairs(player.GetAll()) do`, also with `pairs(...)` or `next, player.GetAll()`), which the matching iterator walks from a cached table instead of building a new one on every call. Tables kept in a variable, or used other than as the loop's table, are left alone. The fix writes `for _, ply in player.Iterator() do`, unless a comment lies among the loop's iterator expressions. Loops where `ipairs`, `pairs`, `next` or the library (`player`) is a local are left alone. Files that do not parse are skipped. | warning | yes | `Iterators: { player.GetAll: player.Iterator, ents.GetAll: ents.Iterator }` |
+| `Performance/SequentialPairs` | `pairs(t)` (or `next, t`) in a generic `for` loop when `t` is known to be a sequence: `ipairs` visits the same entries in order, and LuaJIT compiles it where it cannot compile `pairs`. A sequence is a table constructor of positional values that cannot be `nil` (literals, tables, functions, operators other than `and`), a call of one of the `SequentialFunctions`, or a local declared as one of those, never assigned again, and otherwise only read (`#t`, `t[k]`, `t.name`), passed to `pairs`, `ipairs`, `next` or one of the `SafeFunctions`, or grown and shrunk with `table.insert(t, v)`, `t[#t + 1] = v` and `table.remove` outside the loop. A call counts only when the root of its name is the global (not a local `ents`). The fix writes `ipairs(t)`. Files that do not parse are skipped. | warning | yes | `SequentialFunctions: [player.GetAll, player.GetHumans, player.GetBots, team.GetPlayers, ents.GetAll, ents.FindByClass, ents.FindByModel, ents.FindByName, ents.FindInBox, ents.FindInSphere, ents.FindInCone, ents.FindInPVS, ents.FindAlongRay, string.Explode, string.Split, string.ToTable, table.GetKeys, table.ClearKeys, file.Find]`, `SafeFunctions: [unpack, table.unpack, table.concat, table.sort, table.Count, table.HasValue, table.KeyFromValue, table.Random, table.IsEmpty, table.Copy, table.GetKeys, table.maxn, istable, type, tostring, print, PrintTable]` |
 | `Performance/DivisionByConstant` | Division by a numeric literal that is a power of two (`x / 2`, `x / -4`, `x / 0.5`), which multiplying by its reciprocal computes exactly and faster: the fix writes `x * 0.5`, `x * -0.25`, `x * 2`. Divisors without an exact reciprocal (`/ 3`, `/ 10`: `3 / 10` is `0.3` but `3 * 0.1` is not) are left alone, and so are divisors above `MaxDivisor` and fractional ones below its inverse, whose reciprocals get long (`/ 1024` would become `* 0.0009765625`), divisions of a constant (`255 / 256`, which Lua folds when it compiles the file), and hex divisors (`code / 0x40`, which read as bit shifts). LuaJIT already compiles such divisions as multiplications, so this saves time where code runs in the interpreter. A value whose metatable has `__div` but not `__mul` breaks under the fix. Files that do not parse are skipped. | warning | yes | `MaxDivisor: 256` |
-| `Performance/TypeComparison` | `type(x) == 'number'` and `type(x) != 'number'` (either order, `~=` too) when `Predicates` maps the type name to a predicate that tests it directly, without building and comparing a string. The fix writes `isnumber(x)` or `not isnumber(x)`. | warning | yes | `Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }` |
+| `Performance/TypeComparison` | `type(x) == 'number'` and `type(x) != 'number'` (either order, `~=` too) when `Predicates` maps the type name to a predicate that tests it directly, without building and comparing a string. The fix writes `isnumber(x)` or `not isnumber(x)`. A `type` or predicate that is a local there (a parameter named `type`) is left alone. | warning | yes | `Predicates: { number: isnumber, string: isstring, boolean: isbool, table: istable, function: isfunction, Vector: isvector, Angle: isangle, Panel: ispanel, VMatrix: ismatrix }` |
 | `Performance/TableInsertAppend` | `table.insert(t, v)` standing as a statement with exactly two arguments, which `t[#t + 1] = v` does without calling a function. Only tables that can be written twice are flagged: a name, or fields and indexes over a name whose keys are literals or names (`t`, `self.items`, `lists[id]`). Calls with a `...` value, and calls where `table` is a local, are left alone. The fix writes `t[#t + 1] = v`, unless a comment lies inside the call or the value calls a function and mentions the table's root name (`table.insert(t, build(t))`, where the call could grow the table before `#t` is taken). A call as the value is assumed to return one value; unlike `table.insert`, the assignment goes through a `__newindex` metamethod. Files that do not parse are skipped. Disabled by default: `table.insert` is the default style. | warning | yes | |
 | `Performance/PowerOfTwo` | Squaring with `^ 2` (`x ^ 2`, `self.radius ^ 2.0`), which calls `pow` where multiplying the value by itself is cheaper: the fix writes `x * x`. Only bases that can be written twice are flagged: a name, or fields and indexes over a name whose keys are literals or names. The product is parenthesized where it would otherwise bind looser than `^`: as the operand of a unary operator (`-x ^ 2` to `-(x * x)`) and as the right operand of `*`, `/`, `%` and `^` (`a / b ^ 2` to `a / (b * b)`). No fix when a comment lies inside the expression. LuaJIT already compiles `x ^ 2` as a multiplication in traces, so this saves time where code runs in the interpreter. A value whose metatable has `__pow` but not `__mul` breaks under the fix. Files that do not parse are skipped. | warning | yes | |
 | `Performance/ConcatInLoop` | Strings built with `..` in a loop: an assignment `s = s .. x` (the target is the leftmost operand of the concatenation), `s = x .. s` (the rightmost) or `s ..= x` in the body of a `for`, `while` or `repeat` loop, where `s` is a name or a field chain over a name (`self.text`) declared outside the loop. Each such assignment copies the whole string built so far; collecting the parts in a table and calling `table.concat` copies them once. Targets declared inside the loop (locals of its body, loop variables, fields of them) and loops in a function defined outside them are left alone. Each target is reported once per loop, at its first assignment, in the outermost loop of its function that it outlives. Files that do not parse are skipped. | warning | no | |
@@ -313,8 +477,10 @@ registering call or a function of the file passed by name (`local function f`, `
 `Layout/ExtraSpacing` with `ForceEqualSignAlignment: true` pads the `=` of consecutive
 assignments into one column, while `Layout/SpaceAroundOperators` with `AllowForAlignment: false`
 removes every extra space before an `=`. Enabling both makes the two readers undo each other on
-every autocorrect pass (until the pass limit is reached); keep `AllowForAlignment: true` when
-forcing alignment.
+every autocorrect pass until the pass limit is reached, and `--fix` then warns that the
+autocorrection did not settle and exits with 2; keep `AllowForAlignment: true` when forcing
+alignment. `Lint/ExtendedSyntax` and the readers writing the LuaJIT 3.0 extensions undo each other
+the same way.
 
 ## Lumen templates
 
@@ -498,8 +664,8 @@ Readers share a few helper modules, which are ordinary modules of their departme
 | `readers::naming::declarations` | Local variables, parameters, loop variables and named function definitions of a file. |
 | `readers::naming::case` | `Case`, which classifies a name (one lowercase word, snake_case, lowerCamelCase, PascalCase, SCREAMING_SNAKE_CASE), the `NamingStyle` of the naming readers' `EnforcedStyle`, and `is_lower_camel_case`. |
 | `readers::lint::nesting` | A bracket and block-keyword tracker used by `Lint/Syntax` and `Lint/DuplicateTableKey`. |
-| `readers::lint::ast` | `parse(source)`: a syntax tree of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions, the syntax extensions of LuaJIT 3.0 (short functions are `Function`s with a `FunctionForm`) and Lumen markup, `binary_precedence`, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
-| `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
+| `readers::lint::ast` | `parse(source)`: a syntax tree (built once per source and shared by every reader that asks for it) of statements and expressions (with byte ranges and tokens) built by a recursive descent parser that knows the GLua extensions, the syntax extensions of LuaJIT 3.0 (short functions are `Function`s with a `FunctionForm`) and Lumen markup, `binary_precedence`, a `Visitor` with `walk`, and helpers such as `Expression::dotted_name`, `as_call` and `string_contents`; a file that does not parse yields a `ParseError` at the first rejected token. Used by `Lint/Syntax` and the readers that need statement structure. |
+| `readers::lint::scopes` | `resolve(source)`: a scope resolver that parses the token stream and returns every declared variable with its reads (Lumen component tags included), writes, scope and the variable it shadows, every name reference bound to its variable, and lookups by offset (`reference_at`, `visible_at`, and `is_global_at`, which tells the readers rewriting a library call whether its root name is the global or a local shadowing it), or `None` when the file does not parse. Used by `Lint/UnusedVariable`, `Lint/RedefinedLocal`, `Lint/UnusedSelf` and `Style/PreferredLocalAlias`. |
 | `readers::lint::libraries` | `GMOD_LIBRARIES`, the default list of `Lint/ShadowedLibrary`. |
 | `readers::security::realm` | `is_client_file`, `client_ranges` (the code `if CLIENT then`, the `else` of `if SERVER then` and guards such as `if SERVER then return end` keep on the client) and `server_handlers(block, source, registrar)`: the functions a call such as `net.Receive` or `concommand.Add` registers where they may run on the server, as literals or functions of the file passed by name. Used by the `Security` readers. |
 | `readers::performance::hot_paths` | `hot_calls(block, source, hot_paths, hook_functions)` and `configured_hot_calls(ctx, block)` (under the `HotPaths` and `HookFunctions` options of the `Performance` section, whose defaults it declares): every call of a plain function inside a hot path of a parsed file, with the name of the hot path it is in; plus `is_constant`. Used by the hot-path readers. |
@@ -575,7 +741,10 @@ mod tests {
   that it only runs with `Enabled: true` (or when named in `--only`). `--show-readers` marks such readers
   `(disabled)`.
 - `Reader::default_options` lists the reader's options with their defaults (`Yaml::Integer`, `Yaml::Boolean`,
-  `Yaml::String`, `Yaml::Array`, `Yaml::Hash`); read them with `ctx.option_usize("Max", 120)`,
+  `Yaml::String`, `Yaml::Array`, `Yaml::Hash`); the configuration warns about keys not listed there and about
+  values of another type than the default. `Reader::allowed_values` lists the values of enumerated options
+  (`vec![("EnforcedStyle", &["omit", "require"])]`), which the configuration checks too. Read options with
+  `ctx.option_usize("Max", 120)`,
   `ctx.option_str_map("Alternatives")` and friends. Options shared by every reader of a department are
   declared once with `inventory::submit! { SharedOptions { department: "Performance", defaults: || ... } }`
   and read the same way: a reader sees its department's section under its own options.
@@ -589,7 +758,9 @@ mod tests {
   `Shr`, `Sar`, `Question`, `TernaryColon`, `SafeNav`, `Coalesce`, `Arrow`, `Bar`, `CompoundAssign`,
   `Const`), so a reader matching `Colon` never sees the `:` of a ternary nor `Local` a `const`.
 - A fix is a list of `Edit`s (`replace`, `remove`, `insert`) over byte ranges of the current text. Fixes that
-  overlap an already accepted fix are retried in the next pass, so keep each fix minimal.
+  overlap an already accepted fix are retried in the next pass, so keep each fix minimal. A fix that may change
+  what the code does (deleting a statement) is attached with `offense.with_unsafe_fix(edits)` instead of
+  `with_fix`, so that only `--fix-unsafe` applies it. The `crate::testing` helpers apply unsafe fixes too.
 - Test with `crate::testing`: `inspect`, `inspect_with` (options as YAML, e.g. `"Max: 80"`), `inspect_configured`
   (a whole configuration file, for department sections), `autocorrect`,
   `expect_no_offenses`, `expect_offense`, `expect_offenses` and `expect_correction` (which also checks that the
@@ -604,7 +775,9 @@ mod tests {
 
 ```
 cargo test                                   # unit and integration tests
-cargo test -- --ignored                      # also run over the whole Flux corpus at /home/luna/code/flux-ce:
+cargo test -- --ignored                      # also run over the whole Flux corpus at PROOFREADER_CORPUS
+                                             # (default /home/luna/code/flux-ce; one test also reads Helix
+                                             # at PROOFREADER_HELIX, default /home/luna/code/helix):
                                              # lexing, and checks that every correction (all readers together,
                                              # and the layout groups alone) keeps the code and is idempotent,
                                              # that Layout/LineLength alone only breaks lines, shortens
@@ -614,8 +787,9 @@ cargo test -- --ignored                      # also run over the whole Flux corp
                                              # that correcting its Lumen templates keeps their markup, and
                                              # that the readers writing the LuaJIT 3.0 extensions and the
                                              # fix of Lint/ExtendedSyntax undo each other; and runs the
-                                             # corpora of tests/extended with the LuaJIT at
-                                             # /home/luna/code/nl/LuaJIT, before and after those fixes
+                                             # corpora of tests/extended with the LuaJIT at LUAJIT (default
+                                             # /home/luna/code/nl/LuaJIT/src/luajit), before and after those
+                                             # fixes
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -623,10 +797,11 @@ cargo fmt --check
 ## Example styles
 
 [`examples/.proofreader.yml`](examples/.proofreader.yml) lists every setting with its built-in
-default (it is generated: `PROOFREADER_BLESS=1 cargo test --test cli` rewrites it after reader
-changes). The folders of `examples/` hold complete styles, each a `.proofreader.yml` plus the same
-example plugin written in that style; copy a configuration to the root of a project, or point
-`inherit_from` at it.
+default; `proofreader --init` writes the same text (the file is generated:
+`PROOFREADER_BLESS=1 cargo test --test cli` rewrites it after reader changes). The folders of
+`examples/` hold complete styles, each a `.proofreader.yml` plus the same example plugin written in
+that style; `proofreader --init --style <name>` writes one of them (the names are the folders'), or
+copy a configuration to the root of a project, or point `inherit_from` at it.
 
 | Style | Configuration | What it looks like |
 |-------|---------------|--------------------|

@@ -1,0 +1,12 @@
+- id: proofreader
+  name: proofreader
+  description: Lint GLua files and Lumen templates with proofreader.
+  entry: proofreader --force-exclusion -f quiet
+  language: rust
+  files: \.(lua|lumen)$
+- id: proofreader-fix
+  name: proofreader (fix)
+  description: Apply proofreader's safe corrections to GLua files and Lumen templates.
+  entry: proofreader --force-exclusion --fix -f quiet
+  language: rust
+  files: \.(lua|lumen)$
